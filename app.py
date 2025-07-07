@@ -1,4 +1,4 @@
-# --- START OF FILE app.py (VERSION PURE VOLATILITÉ) ---
+# --- START OF FILE app.py (VERSION AUTOPSIE) ---
 
 import streamlit as st
 import pandas as pd
@@ -13,16 +13,7 @@ import pytz
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(page_title="Forex Volatility Screener", page_icon="⚡", layout="wide")
-
-# --- CSS PERSONNALISÉ ---
-st.markdown("""
-<style>
-    .main > div { padding-top: 2rem; }
-    .screener-header { font-size: 28px; font-weight: bold; color: #FAFAFA; margin-bottom: 15px; text-align: center; }
-    .update-info { background-color: #262730; padding: 8px 15px; border-radius: 5px; margin-bottom: 20px; font-size: 14px; color: #A9A9A9; border: 1px solid #333A49; text-align: center; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="Screener Autopsy", page_icon="🔬", layout="wide")
 
 # --- ACCÈS AUX SECRETS OANDA ---
 try:
@@ -31,23 +22,16 @@ except KeyError:
     st.error("🔑 Secret OANDA_ACCESS_TOKEN non trouvé !"); st.stop()
 
 # --- CONSTANTES ---
-INSTRUMENTS_LIST = [
-    'EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD', 
-    'EUR_JPY', 'GBP_JPY', 'CHF_JPY', 'AUD_JPY', 'CAD_JPY', 'NZD_JPY',
-    'EUR_GBP', 'EUR_AUD', 'EUR_CAD', 'EUR_CHF', 'EUR_NZD',
-    'GBP_AUD', 'GBP_CAD', 'GBP_CHF', 'GBP_NZD', 'XAU_USD'
-]
+INSTRUMENTS_LIST = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'XAU_USD'] # Liste minimale pour un test rapide
 TIMEZONE = 'Europe/Paris'
 
-# ==============================================================================
-# 1. FONCTIONS DE CALCUL ET DE LOGIQUE
-# ==============================================================================
-@st.cache_data(ttl=600, show_spinner=False)
+# --- FONCTIONS DE CALCUL (INCHANGÉES) ---
+@st.cache_data(ttl=10, show_spinner=False) 
 def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
     all_data = {}
     for tf in timeframes:
-        params = {'granularity': tf, 'count': 50, 'price': 'M'} # Moins de données nécessaires
+        params = {'granularity': tf, 'count': 50, 'price': 'M'}
         try:
             r = instruments.InstrumentsCandles(instrument=pair, params=params)
             api.request(r)
@@ -61,138 +45,76 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     return all_data
 
 def calculate_volatility_indicators(df):
-    if df is None or len(df) < 30: return None # ADX(14) a besoin d'au moins ~28 points
-    
-    # On ne calcule que ce qui est nécessaire
+    if df is None or len(df) < 30: return None
     df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
     adx_indicator = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
     df['adx'] = adx_indicator.adx()
     df['dmi_plus'] = adx_indicator.adx_pos()
     df['dmi_minus'] = adx_indicator.adx_neg()
-    
-    return df
-
-def get_star_rating(score):
-    return "⭐" * int(score) + "☆" * (4 - int(score))
+    # IMPORTANT: On supprime les lignes initiales qui contiennent des NaN
+    return df.dropna().reset_index(drop=True)
 
 # ==============================================================================
-# 2. LOGIQUE PRINCIPALE D'ANALYSE (SIMPLIFIÉE)
+# 2. LOGIQUE D'AUTOPSIE
 # ==============================================================================
-def run_volatility_analysis(instruments_list, params):
-    all_results = []
-    progress_bar = st.progress(0, text="Initialisation du scan...")
+def run_autopsy(instruments_list):
+    autopsy_reports = []
+    progress_bar = st.progress(0, text="Lancement de l'autopsie des données...")
     
     for i, instrument in enumerate(instruments_list):
         progress_text = f"Analyse de {instrument.replace('_', '/')}... ({i+1}/{len(instruments_list)})"
         progress_bar.progress((i + 1) / len(instruments_list), text=progress_text)
         
         multi_tf_data = fetch_multi_timeframe_data(instrument)
-        if multi_tf_data is None: continue
-
-        data_D = calculate_volatility_indicators(multi_tf_data.get('D'))
-        data_H4 = calculate_volatility_indicators(multi_tf_data.get('H4'))
-        data_H1 = calculate_volatility_indicators(multi_tf_data.get('H1'))
-        
-        if data_D is None or data_H4 is None or data_H1 is None: continue
-            
-        last_D, last_H4, last_H1 = data_D.iloc[-1], data_H4.iloc[-1], data_H1.iloc[-1]
-
-        required_cols = ['atr', 'adx', 'dmi_plus', 'dmi_minus']
-        if last_D[required_cols].isnull().any() or last_H4[required_cols].isnull().any() or last_H1[required_cols].isnull().any():
+        if multi_tf_data is None: 
+            autopsy_reports.append({'Instrument': instrument, 'Statut': 'Échec Récupération Données'})
             continue
 
-        score = 0
+        data_H1 = calculate_volatility_indicators(multi_tf_data.get('H1'))
         
-        # --- SCORING "PUR VOLATILITÉ" (4 ÉTOILES) ---
-
-        # Étoile 1: Volatilité
-        price = last_H1['Close']
-        atr_percent = (last_D['atr'] / price) * 100
-        if atr_percent >= params['min_atr_percent']:
-            score += 1
-
-        # Étoile 2: Tendance de fond (H4) forte ?
-        if last_H4['adx'] > params['min_adx']:
-            score += 1
-            
-        # Étoile 3: Tendance d'entrée (H1) forte ?
-        if last_H1['adx'] > params['min_adx']:
-            score += 1
-
-        # Étoile 4: Accélération de la tendance ?
-        if last_H1['adx'] > last_H4['adx']:
-            score += 1
+        if data_H1 is None or data_H1.empty:
+            autopsy_reports.append({'Instrument': instrument, 'Statut': 'Échec Calcul Indicateurs H1'})
+            continue
         
-        # Détermination de la direction
-        direction = 'Achat' if last_H1['dmi_plus'] > last_H1['dmi_minus'] else 'Vente'
-
-        all_results.append({
-            'Paire': instrument.replace('_', '/'), 'Direction': direction, 'Prix': price,
-            'ATR (D) %': atr_percent, 'ADX H1': last_H1['adx'], 'ADX H4': last_H4['adx'],
-            'Score': score
-        })
+        # On prend la dernière ligne complète
+        last_row_data = data_H1.iloc[-1].to_dict()
+        last_row_data['Instrument'] = instrument
+        last_row_data['Statut'] = 'OK'
+        
+        autopsy_reports.append(last_row_data)
         
     progress_bar.empty()
-    return pd.DataFrame(all_results)
+    return pd.DataFrame(autopsy_reports)
 
 # ==============================================================================
-# 3. INTERFACE UTILISATEUR
+# 3. INTERFACE UTILISATEUR DE DÉBOGAGE
 # ==============================================================================
-st.markdown('<h1 class="screener-header">⚡ Forex & Gold Volatility Screener</h1>', unsafe_allow_html=True)
+st.markdown('<h1 style="text-align: center;">🔬 Autopsie des Données OANDA</h1>', unsafe_allow_html=True)
+st.warning("Cet outil ne filtre rien. Il affiche les données brutes de la dernière bougie H1 pour chaque instrument après le calcul des indicateurs. L'objectif est de vérifier si les valeurs (ATR, ADX...) sont correctement calculées ou si elles sont nulles (NaN).")
 
-with st.sidebar:
-    st.header("🛠️ Paramètres du Filtre")
-    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 4, 2, 1) # Note sur 4 étoiles
-    params = {
-        'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.10, 2.00, 0.40, 0.05),
-        'min_adx': st.slider("ADX Minimum (H1 & H4)", 15, 40, 20, 1),
-    }
+if st.button("🔬 Lancer l'autopsie", use_container_width=True, type="primary"):
+    with st.spinner("Analyse en cours..."):
+        st.session_state.autopsy_df = run_autopsy(INSTRUMENTS_LIST)
+        st.session_state.autopsy_done = True
 
-if 'scan_done' not in st.session_state: st.session_state.scan_done = False
-if st.sidebar.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
-    st.session_state.scan_done = False; st.cache_data.clear(); st.rerun()
-
-if not st.session_state.scan_done:
-    with st.spinner("Analyse de la volatilité en cours..."):
-        st.session_state.results_df = run_volatility_analysis(INSTRUMENTS_LIST, params)
-        st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
-
-if st.session_state.scan_done and 'results_df' in st.session_state:
-    df = st.session_state.results_df
-    scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
-    st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
+if 'autopsy_done' in st.session_state and st.session_state.autopsy_done:
+    st.subheader("Rapport d'autopsie :")
+    
+    df = st.session_state.autopsy_df
     
     if df.empty:
-        st.warning("Aucun instrument n'a pu être analysé. Cela peut être dû à une indisponibilité de l'API OANDA.")
+        st.error("Échec total. Même l'outil d'autopsie n'a rien pu analyser. Le problème est très probablement lié à la clé API ou à une indisponibilité majeure du service OANDA.")
     else:
-        filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
-        if filtered_df.empty:
-            st.info(f"Aucune opportunité trouvée avec une note d'au moins {min_score_to_display} étoile(s). Essayez de baisser la note minimale.")
-        else:
-            st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
-            
-            filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
-            display_df = filtered_df.copy()
-            cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
-            for col in cols_to_format:
-                display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-            
-            display_cols = ['Note', 'Direction', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
-            def style_dataframe(df_to_style):
-                def style_direction(direction):
-                    color = 'lightgreen' if direction == 'Achat' else 'lightcoral'
-                    return f'color: {color}; font-weight: bold;'
-                return df_to_style.style.applymap(style_direction, subset=['Direction'])
-            
-            st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
+        # On réorganise les colonnes pour une meilleure lisibilité
+        cols = ['Instrument', 'Statut', 'Time', 'Close', 'atr', 'adx', 'dmi_plus', 'dmi_minus']
+        display_cols = [col for col in cols if col in df.columns]
+        
+        st.dataframe(df[display_cols].set_index('Instrument'), use_container_width=True)
 
-with st.expander("ℹ️ Comprendre la Notation (4 Étoiles)"):
-    st.markdown("""
-    - ⭐ **Volatilité**: L'ATR journalier est supérieur au seuil.
-    - ⭐ **Tendance de Fond**: L'ADX sur H4 est supérieur au seuil (tendance forte).
-    - ⭐ **Tendance d'Entrée**: L'ADX sur H1 est supérieur au seuil (tendance forte).
-    - ⭐ **Accélération**: L'ADX H1 est supérieur à l'ADX H4 (la tendance s'accélère).
-    La **Direction** (Achat/Vente) est déterminée par le DMI sur H1.
-    """)
-# --- END OF FILE app.py ---
-    
+        # Analyse automatique des résultats
+        if 'adx' in df.columns and df['adx'].isnull().all():
+            st.error("Problème détecté : La colonne 'adx' ne contient que des valeurs nulles (NaN). Le calcul de l'ADX échoue systématiquement.")
+        elif 'atr' in df.columns and df['atr'].isnull().all():
+             st.error("Problème détecté : La colonne 'atr' ne contient que des valeurs nulles (NaN). Le calcul de l'ATR échoue systématiquement.")
+        else:
+            st.success("Les données semblent être calculées. Si aucune opportunité n'apparaît dans la version normale, le problème vient des seuils de filtrage qui sont trop stricts pour les conditions de marché actuelles.")

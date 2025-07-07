@@ -1,4 +1,4 @@
-# --- START OF FILE app.py (VERSION FINALE) ---
+# --- START OF FILE app.py (VERSION LOGIQUE TRADINGVIEW) ---
 
 import streamlit as st
 import pandas as pd
@@ -37,10 +37,7 @@ INSTRUMENTS_LIST = [
     'EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD', 
     'EUR_JPY', 'GBP_JPY', 'CHF_JPY', 'AUD_JPY', 'CAD_JPY', 'NZD_JPY',
     'EUR_GBP', 'EUR_AUD', 'EUR_CAD', 'EUR_CHF', 'EUR_NZD',
-    'GBP_AUD', 'GBP_CAD', 'GBP_CHF', 'GBP_NZD',
-    'XAU_USD', # On garde l'or
-    # On peut rajouter les indices plus tard, une fois que ceci fonctionne
-    # 'US30_USD', 'NAS100_USD', 'SPX500_USD' 
+    'GBP_AUD', 'GBP_CAD', 'GBP_CHF', 'GBP_NZD', 'XAU_USD'
 ]
 TIMEZONE = 'Europe/Paris'
 
@@ -52,7 +49,7 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
     all_data = {}
     for tf in timeframes:
-        params = {'granularity': tf, 'count': 100, 'price': 'M'} # 100 bougies suffisent
+        params = {'granularity': tf, 'count': 100, 'price': 'M'}
         try:
             r = instruments.InstrumentsCandles(instrument=pair, params=params)
             api.request(r)
@@ -66,9 +63,7 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     return all_data
 
 def calculate_all_indicators(df):
-    # ### CORRECTION : Condition assouplie
-    if df is None or len(df) < 55: return None # L'EMA 50 a besoin d'au moins 50 points
-    
+    if df is None or len(df) < 55: return None
     df['ema_fast'] = ta.trend.ema_indicator(df['Close'], window=21)
     df['ema_slow'] = ta.trend.ema_indicator(df['Close'], window=50)
     df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
@@ -77,15 +72,13 @@ def calculate_all_indicators(df):
     df['dmi_plus'] = adx_indicator.adx_pos()
     df['dmi_minus'] = adx_indicator.adx_neg()
     df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
-    
-    # On retourne le DataFrame même avec des NaN, que l'on gèrera plus tard
     return df
 
 def get_star_rating(score):
     return "⭐" * int(score) + "☆" * (5 - int(score))
 
 # ==============================================================================
-# 2. LOGIQUE PRINCIPALE D'ANALYSE
+# 2. LOGIQUE PRINCIPALE D'ANALYSE (LOGIQUE TRADINGVIEW)
 # ==============================================================================
 def run_full_analysis(instruments_list, params):
     all_results = []
@@ -102,13 +95,10 @@ def run_full_analysis(instruments_list, params):
         data_H4 = calculate_all_indicators(multi_tf_data.get('H4'))
         data_H1 = calculate_all_indicators(multi_tf_data.get('H1'))
         
-        # ### CORRECTION : On vérifie que les dernières données existent après calcul
-        if data_D is None or data_H4 is None or data_H1 is None or data_D.empty or data_H4.empty or data_H1.empty:
-            continue
+        if data_D is None or data_H4 is None or data_H1 is None: continue
             
         last_D, last_H4, last_H1 = data_D.iloc[-1], data_H4.iloc[-1], data_H1.iloc[-1]
 
-        # ### CORRECTION : Vérifier que les indicateurs ne sont pas NaN
         required_cols = ['atr', 'adx', 'dmi_plus', 'dmi_minus', 'rsi', 'ema_fast', 'ema_slow']
         if last_D[required_cols].isnull().any() or last_H4[required_cols].isnull().any() or last_H1[required_cols].isnull().any():
             continue
@@ -116,19 +106,36 @@ def run_full_analysis(instruments_list, params):
         price = last_H1['Close']
         score = 0
         
-        atr_percent = (last_D['atr'] / price) * 100
-        if atr_percent >= params['min_atr_percent']: score += 1
+        # --- NOUVEAU SCORING ALIGNÉ SUR TRADINGVIEW ---
 
+        # Étoile 1: Volatilité
+        atr_percent = (last_D['atr'] / price) * 100
+        if atr_percent >= params['min_atr_percent']:
+            score += 1
+
+        # Étoile 2: Tendance H4 forte ?
+        if last_H4['adx'] > params['min_adx']:
+            score += 1
+            
+        # Étoile 3: Tendance H1 forte ?
+        if last_H1['adx'] > params['min_adx']:
+            score += 1
+
+        # Étoile 4: Alignement des tendances ?
         trend_H4 = 'Bullish' if last_H4['ema_fast'] > last_H4['ema_slow'] else 'Bearish'
         trend_H1 = 'Bullish' if last_H1['ema_fast'] > last_H1['ema_slow'] else 'Bearish'
+        if trend_H1 == trend_H4:
+            score += 1
         
-        if last_H4['adx'] > params['min_adx'] and ((trend_H4 == 'Bullish' and last_H4['dmi_plus'] > last_H4['dmi_minus']) or (trend_H4 == 'Bearish' and last_H4['dmi_minus'] > last_H4['dmi_plus'])): score += 1
-        if last_H1['adx'] > params['min_adx'] and ((trend_H1 == 'Bullish' and last_H1['dmi_plus'] > last_H1['dmi_minus']) or (trend_H1 == 'Bearish' and last_H1['dmi_minus'] > last_H1['dmi_plus'])): score += 1
-        if trend_H1 == trend_H4: score += 1
-        if params['rsi_min'] < last_H1['rsi'] < params['rsi_max']: score += 1
+        # Étoile 5: Momentum Optimal ?
+        if params['rsi_min'] < last_H1['rsi'] < params['rsi_max']:
+            score += 1
+
+        # Détermination de la direction finale basée sur H1
+        direction_H1 = 'Achat' if last_H1['dmi_plus'] > last_H1['dmi_minus'] else 'Vente'
 
         all_results.append({
-            'Paire': instrument.replace('_', '/'), 'Direction': trend_H1, 'Prix': price,
+            'Paire': instrument.replace('_', '/'), 'Direction': direction_H1, 'Prix': price,
             'ATR (D) %': atr_percent, 'ADX H1': last_H1['adx'], 'ADX H4': last_H4['adx'],
             'RSI H1': last_H1['rsi'], 'Score': score
         })
@@ -137,45 +144,45 @@ def run_full_analysis(instruments_list, params):
     return pd.DataFrame(all_results)
 
 # ==============================================================================
-# 3. FONCTION D'EXPORT PDF (simplifiée pour le test)
+# 3. FONCTION D'EXPORT PDF ET INTERFACE
 # ==============================================================================
-def create_pdf_report(df):
-    pdf = FPDF(orientation='L', unit='mm', format='A4'); pdf.add_page()
-    pdf.set_font('Arial', 'B', 12)
-    pdf.cell(0, 10, 'Rapport Screener', 0, 1, 'C')
-    # ...
+# ... (le reste du code est inchangé) ...
+def create_pdf_report(df, params, scan_time):
+    class PDF(FPDF):
+        def header(self): self.set_font('Arial', 'B', 15); self.cell(0, 10, 'Rapport - Screener Intraday Pro', 0, 1, 'C'); self.set_font('Arial', '', 9); self.cell(0, 5, f'Scan du {scan_time}', 0, 1, 'C'); self.ln(2)
+        def footer(self): self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, 'Page ' + str(self.page_no()), 0, 0, 'C')
+    pdf = PDF(orientation='L', unit='mm', format='A4'); pdf.add_page()
+    pdf.set_font('Arial', 'B', 12); pdf.cell(0, 10, 'Rapport des opportunites', 0, 1, 'L')
+    if not df.empty:
+        df_copy = df.copy()
+        df_copy['Note'] = df_copy['Score'].apply(get_star_rating)
+        for index, row in df_copy.iterrows():
+            pdf.set_font('Arial', '', 10); pdf.cell(0, 8, f"{row['Paire']} - {row['Note']} - {row['Direction']}", 0, 1)
     return bytes(pdf.output())
 
-# ==============================================================================
-# 4. INTERFACE UTILISATEUR
-# ==============================================================================
 st.markdown('<h1 class="screener-header">🎯 Forex & Gold Screener Pro</h1>', unsafe_allow_html=True)
 with st.sidebar:
     st.header("🛠️ Paramètres du Filtre")
-    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 5, 1, 1) # Par défaut à 1 étoile
+    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 5, 3, 1, help="Affiche les opportunités avec au moins cette note.")
     params = {
         'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.1, 2.0, 0.4, 0.05),
-        'min_adx': st.slider("ADX Minimum (H1 & H4)", 15, 30, 20, 1),
+        'min_adx': st.slider("ADX Minimum (H1 & H4)", 15, 40, 20, 1),
         'rsi_min': st.slider("RSI H1 Minimum", 10, 40, 30, 1),
         'rsi_max': st.slider("RSI H1 Maximum", 60, 90, 70, 1),
     }
-
 if 'scan_done' not in st.session_state: st.session_state.scan_done = False
 col1, col2, _ = st.columns([1.5, 1.5, 5])
 with col1:
     if st.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
         st.session_state.scan_done = False; st.cache_data.clear(); st.rerun()
-
 if not st.session_state.scan_done:
     with st.spinner("Analyse en cours..."):
         st.session_state.results_df = run_full_analysis(INSTRUMENTS_LIST, params)
         st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
-
 if st.session_state.scan_done and 'results_df' in st.session_state:
     df = st.session_state.results_df
     scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
     st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
-    
     if df.empty:
         st.warning("Aucun instrument n'a pu être complètement analysé. Les conditions du marché sont peut-être inhabituelles ou les données sont incomplètes.")
     else:
@@ -185,8 +192,8 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
         else:
             st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
             with col2:
-                pdf_data = create_pdf_report(filtered_df)
-                st.download_button(label="📄 Exporter en PDF", data=pdf_data, file_name=f"Screener_Report.pdf", mime="application/pdf", use_container_width=True)
+                pdf_data = create_pdf_report(filtered_df, params, scan_time_str)
+                st.download_button(label="📄 Exporter en PDF", data=pdf_data, file_name=f"Screener_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
             
             filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
             display_df = filtered_df.copy()
@@ -197,11 +204,18 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
             display_cols = ['Note', 'Direction', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1']
             def style_dataframe(df_to_style):
                 def style_direction(direction):
-                    color = 'lightgreen' if direction == 'Bullish' else 'lightcoral'
+                    color = 'lightgreen' if direction == 'Achat' else 'lightcoral'
                     return f'color: {color}; font-weight: bold;'
                 return df_to_style.style.applymap(style_direction, subset=['Direction'])
-            
             st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
 
 with st.expander("ℹ️ Comprendre la Stratégie et la Notation"):
-    st.markdown("""...""")
+    st.markdown("""
+    Cette application note les opportunités sur 5 étoiles en se basant sur des critères de confluence :
+    - ⭐ **Volatilité**: L'ATR sur le graphique journalier est-il suffisant ?
+    - ⭐ **Tendance H4**: La tendance de fond (H4) est-elle forte (ADX > 20) ?
+    - ⭐ **Tendance H1**: La tendance d'entrée (H1) est-elle forte (ADX > 20) ?
+    - ⭐ **Alignement**: La tendance H1 est-elle dans le même sens que la tendance H4 ?
+    - ⭐ **Momentum**: Le RSI H1 est-il dans une zone "saine" (ni sur-acheté, ni sur-vendu) ?
+    La **Direction** (Achat/Vente) est déterminée par le DMI sur H1.
+    """)

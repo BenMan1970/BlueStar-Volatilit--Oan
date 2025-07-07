@@ -50,7 +50,8 @@ TIMEZONE = 'Europe/Paris'
 # ==============================================================================
 # 1. FONCTIONS DE CALCUL ET DE LOGIQUE
 # ==============================================================================
-@st.cache_data(ttl=600, show_spinner="Fetching OANDA data...")
+
+@st.cache_data(ttl=600, show_spinner=False) # Spinner géré manuellement
 def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
     all_data = {}
@@ -59,13 +60,18 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
         try:
             r = instruments.InstrumentsCandles(instrument=pair, params=params)
             api.request(r)
+            if 'candles' not in r.response or not r.response['candles']:
+                # ### CORRECTION : Gérer le cas où il n'y a pas de bougies
+                return None # Retourner None si les données sont vides pour un timeframe
+
             data = [{'Time': c['time'], 'Open': float(c['mid']['o']), 'High': float(c['mid']['h']), 'Low': float(c['mid']['l']), 'Close': float(c['mid']['c'])} for c in r.response['candles']]
-            if not data: continue
             df = pd.DataFrame(data)
             df['Time'] = pd.to_datetime(df['Time']).dt.tz_localize('UTC').dt.tz_convert(TIMEZONE)
             all_data[tf] = df
-        except Exception:
-            continue
+        except Exception as e:
+            # ### CORRECTION : Si une requête API échoue pour un instrument, on retourne None
+            # st.toast(f"Impossible de récupérer les données pour {pair}. Erreur API.", icon="⚠️")
+            return None
     return all_data
 
 def calculate_all_indicators(df):
@@ -88,14 +94,19 @@ def get_star_rating(score):
 # ==============================================================================
 def run_full_analysis(instruments_list, params):
     all_results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    failed_instruments = []
+    
+    progress_bar = st.progress(0, text="Initialisation du scan...")
     
     for i, instrument in enumerate(instruments_list):
-        status_text.text(f"Analyse de {instrument.replace('_', '/')}... ({i+1}/{len(instruments_list)})")
+        progress_text = f"Analyse de {instrument.replace('_', '/')}... ({i+1}/{len(instruments_list)})"
+        progress_bar.progress((i + 1) / len(instruments_list), text=progress_text)
         
         multi_tf_data = fetch_multi_timeframe_data(instrument)
-        if not all(tf in multi_tf_data for tf in ['D', 'H4', 'H1']): continue
+        # ### CORRECTION : Meilleure gestion des échecs de récupération
+        if multi_tf_data is None:
+            failed_instruments.append(instrument)
+            continue
 
         data_D = calculate_all_indicators(multi_tf_data['D'])
         data_H4 = calculate_all_indicators(multi_tf_data['H4'])
@@ -106,51 +117,34 @@ def run_full_analysis(instruments_list, params):
         price = last_H1['Close']
         score = 0
         
-        # --- CORRECTION DU SYSTÈME DE NOTATION ---
-        
-        # Étoile 1: Volatilité
         atr_percent = (last_D['atr'] / price) * 100
-        # On ne met plus de 'continue', on ajoute simplement un point si la condition est remplie
-        if atr_percent >= params['min_atr_percent']:
-            score += 1
+        if atr_percent >= params['min_atr_percent']: score += 1
 
         trend_H4 = 'Bullish' if last_H4['ema_fast'] > last_H4['ema_slow'] else 'Bearish'
         trend_H1 = 'Bullish' if last_H1['ema_fast'] > last_H1['ema_slow'] else 'Bearish'
         
-        # Étoile 2: Contexte de Tendance H4
-        if last_H4['adx'] > params['min_adx'] and ((trend_H4 == 'Bullish' and last_H4['dmi_plus'] > last_H4['dmi_minus']) or (trend_H4 == 'Bearish' and last_H4['dmi_minus'] > last_H4['dmi_plus'])):
-            score += 1
-            
-        # Étoile 3: Tendance d'Exécution H1
-        if last_H1['adx'] > params['min_adx'] and ((trend_H1 == 'Bullish' and last_H1['dmi_plus'] > last_H1['dmi_minus']) or (trend_H1 == 'Bearish' and last_H1['dmi_minus'] > last_H1['dmi_plus'])):
-            score += 1
+        if last_H4['adx'] > params['min_adx'] and ((trend_H4 == 'Bullish' and last_H4['dmi_plus'] > last_H4['dmi_minus']) or (trend_H4 == 'Bearish' and last_H4['dmi_minus'] > last_H4['dmi_plus'])): score += 1
+        if last_H1['adx'] > params['min_adx'] and ((trend_H1 == 'Bullish' and last_H1['dmi_plus'] > last_H1['dmi_minus']) or (trend_H1 == 'Bearish' and last_H1['dmi_minus'] > last_H1['dmi_plus'])): score += 1
+        if trend_H1 == trend_H4: score += 1
+        if params['rsi_min'] < last_H1['rsi'] < params['rsi_max']: score += 1
 
-        # Étoile 4: Confluence des Tendances
-        if trend_H1 == trend_H4:
-            score += 1
-        
-        # Étoile 5: Momentum Optimal
-        if params['rsi_min'] < last_H1['rsi'] < params['rsi_max']:
-            score += 1
-
-        # On ajoute TOUS les instruments à la liste, même ceux avec un score faible
         all_results.append({
             'Paire': instrument.replace('_', '/'), 'Direction': trend_H1, 'Prix': price,
             'ATR (D) %': atr_percent, 'ADX H1': last_H1['adx'], 'ADX H4': last_H4['adx'],
             'RSI H1': last_H1['rsi'], 'Score': score
         })
-        progress_bar.progress((i + 1) / len(instruments_list))
-
-    status_text.empty()
+        
     progress_bar.empty()
+    if failed_instruments:
+        st.toast(f"Échec de récupération pour : {', '.join(failed_instruments)}", icon="⚠️")
+        
     return pd.DataFrame(all_results)
 
-# ... (Le reste du code, notamment la fonction PDF et l'UI, reste identique) ...
+# ... (Le reste du code, notamment la fonction PDF et l'UI, reste identique à la version précédente) ...
 # ==============================================================================
-# 3. FONCTION D'EXPORT PDF (PLACEHOLDER)
+# 3. FONCTION D'EXPORT PDF
 # ==============================================================================
 def create_pdf_report(df, params, scan_time):
-    # (Cette fonction peut être complétée plus tard)
     class PDF(FPDF):
         def header(self):
             self.set_font('Arial', 'B', 15); self.cell(0, 10, 'Rapport - Screener Intraday Pro', 0, 1, 'C'); self.set_font('Arial', '', 9)
@@ -170,9 +164,7 @@ def create_pdf_report(df, params, scan_time):
 # ==============================================================================
 # 4. INTERFACE UTILISATEUR
 # ==============================================================================
-
 st.markdown('<h1 class="screener-header">🎯 Forex & Indices Screener Pro</h1>', unsafe_allow_html=True)
-
 with st.sidebar:
     st.header("🛠️ Paramètres du Filtre")
     min_score_to_display = st.slider("Note minimale (étoiles)", 0, 5, 3, 1, help="Affiche les opportunités avec au moins cette note.")
@@ -182,26 +174,20 @@ with st.sidebar:
         'rsi_min': st.slider("RSI H1 Minimum", 10, 40, 30, 1),
         'rsi_max': st.slider("RSI H1 Maximum", 60, 90, 70, 1),
     }
-
 if 'scan_done' not in st.session_state: st.session_state.scan_done = False
-
 col1, col2, _ = st.columns([1.5, 1.5, 5])
 with col1:
     if st.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
         st.session_state.scan_done = False; st.cache_data.clear(); st.rerun()
-
 if not st.session_state.scan_done:
-    with st.spinner("Analyse en cours..."):
-        st.session_state.results_df = run_full_analysis(INSTRUMENTS_LIST, params)
-        st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
-
+    st.session_state.results_df = run_full_analysis(INSTRUMENTS_LIST, params)
+    st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
 if st.session_state.scan_done and 'results_df' in st.session_state:
     df = st.session_state.results_df
     scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
     st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
-    
     if df.empty:
-        st.error("Un problème est survenu lors de la récupération des données. Veuillez réessayer.")
+        st.error("Aucune donnée n'a pu être récupérée pour les instruments. Vérifiez que les noms d'instruments sont corrects ou l'état de l'API OANDA.")
     else:
         filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
         if filtered_df.empty:
@@ -224,16 +210,6 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
                     color = 'lightgreen' if direction == 'Bullish' else 'lightcoral'
                     return f'color: {color}; font-weight: bold;'
                 return df_to_style.style.applymap(style_direction, subset=['Direction'])
-            
             st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
-
 with st.expander("ℹ️ Comprendre la Stratégie et la Notation"):
-    st.markdown("""
-    Cette application note les opportunités sur 5 étoiles :
-    - ⭐ **Volatilité**: ATR(D) > seuil.
-    - ⭐ **Tendance H4**: ADX > seuil ET DMI aligné.
-    - ⭐ **Tendance H1**: ADX > seuil ET DMI aligné.
-    - ⭐ **Confluence**: La tendance H1 est la même que la tendance H4.
-    - ⭐ **Momentum**: RSI H1 dans la zone de confort (ni sur-vendu, ni sur-acheté).
-    """)
-# --- END OF FILE app.py ---
+    st.markdown("""(Votre guide ici)""")

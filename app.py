@@ -8,277 +8,287 @@ from datetime import datetime
 from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments
 from fpdf import FPDF
-import ta  # Bibliothèque pour les indicateurs techniques
+import ta
+from scipy.signal import find_peaks
 
 warnings.filterwarnings('ignore')
 
-# --- Configuration de la page Streamlit ---
+# --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(
-    page_title="Volatility & Trend Screener (OANDA)",
-    page_icon="⚡",
+    page_title="Forex Intraday Screener Pro",
+    page_icon="🎯",
     layout="wide"
 )
 
-# --- CSS personnalisé (similaire à l'autre app) ---
+# --- CSS PERSONNALISÉ ---
 st.markdown("""
 <style>
     .main > div { padding-top: 2rem; }
     .screener-header { font-size: 28px; font-weight: bold; color: #FAFAFA; margin-bottom: 15px; text-align: center; }
     .update-info { background-color: #262730; padding: 8px 15px; border-radius: 5px; margin-bottom: 20px; font-size: 14px; color: #A9A9A9; border: 1px solid #333A49; text-align: center; }
-    /* Style pour le DataFrame */
-    .stDataFrame { font-size: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Accès aux secrets OANDA ---
+# --- ACCÈS AUX SECRETS OANDA ---
 try:
-    OANDA_ACCOUNT_ID = st.secrets["OANDA_ACCOUNT_ID"]
     OANDA_ACCESS_TOKEN = st.secrets["OANDA_ACCESS_TOKEN"]
 except KeyError:
-    st.error("🔑 Secrets OANDA non trouvés ! Veuillez les configurer dans les paramètres de l'application.")
-    st.code('OANDA_ACCOUNT_ID = "..."\nOANDA_ACCESS_TOKEN = "..."')
+    st.error("🔑 Secret OANDA_ACCESS_TOKEN non trouvé ! Veuillez le configurer.")
     st.stop()
 
-# --- Constantes et Mappages ---
+# --- CONSTANTES ---
 FOREX_PAIRS = [
-    'EUR/USD', 'USD/JPY', 'GBP/USD', 'USD/CHF', 'AUD/USD', 'USD/CAD', 'NZD/USD', 
-    'EUR/JPY', 'GBP/JPY', 'CHF/JPY', 'AUD/JPY', 'CAD/JPY', 'NZD/JPY',
-    'EUR/GBP', 'EUR/AUD', 'EUR/CAD', 'EUR/CHF', 'EUR/NZD',
-    'GBP/AUD', 'GBP/CAD', 'GBP/CHF', 'GBP/NZD'
+    'EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD', 
+    'EUR_JPY', 'GBP_JPY', 'CHF_JPY', 'AUD_JPY', 'CAD_JPY', 'NZD_JPY',
+    'EUR_GBP', 'EUR_AUD', 'EUR_CAD', 'EUR_CHF', 'EUR_NZD',
+    'GBP_AUD', 'GBP_CAD', 'GBP_CHF', 'GBP_NZD'
 ]
+TIMEZONE = 'Europe/Paris'
 
-TIMEFRAME_MAP = {
-    '15 minutes': 'M15',
-    '30 minutes': 'M30',
-    '1 heure': 'H1',
-    '4 heures': 'H4',
-    'Journalier': 'D'
-}
+# ==============================================================================
+# 1. FONCTIONS DE RÉCUPÉRATION ET DE CALCUL
+# ==============================================================================
 
-# --- Fonctions de l'application ---
-
-@st.cache_data(ttl=300, show_spinner="Fetching OANDA data...")
-def get_oanda_data(pair, granularity):
+@st.cache_data(ttl=600, show_spinner="Fetching OANDA data...")
+def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
+    """Récupère les données pour plusieurs timeframes pour une seule paire."""
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
-    instrument = pair.replace('/', '_')
-    params = {'granularity': granularity, 'count': 250} # Assez de données pour les calculs
-    try:
-        r = instruments.InstrumentsCandles(instrument=instrument, params=params)
-        api.request(r)
-        data = [{'Time': c['time'], 'Open': float(c['mid']['o']), 'High': float(c['mid']['h']), 
-                 'Low': float(c['mid']['l']), 'Close': float(c['mid']['c'])} 
-                for c in r.response['candles']]
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data)
-        df['Time'] = pd.to_datetime(df['Time'])
-        return df
-    except Exception as e:
-        # st.warning(f"Could not fetch data for {pair}: {e}")
-        return pd.DataFrame()
+    all_data = {}
+    for tf in timeframes:
+        params = {'granularity': tf, 'count': 200, 'price': 'M'}
+        try:
+            r = instruments.InstrumentsCandles(instrument=pair, params=params)
+            api.request(r)
+            data = [{'Time': c['time'], 'Open': float(c['mid']['o']), 'High': float(c['mid']['h']), 
+                     'Low': float(c['mid']['l']), 'Close': float(c['mid']['c'])} 
+                    for c in r.response['candles']]
+            if not data: continue
+            df = pd.DataFrame(data)
+            df['Time'] = pd.to_datetime(df['Time']).dt.tz_convert(TIMEZONE)
+            all_data[tf] = df
+        except Exception:
+            continue
+    return all_data
 
-def calculate_indicators(df):
-    if df.empty or len(df) < 20: # Besoin d'assez de données pour ADX/ATR 14
-        return None
+def calculate_all_indicators(df):
+    """Calcule tous les indicateurs nécessaires sur un DataFrame."""
+    if df is None or len(df) < 50: return None
     
-    # Calcul ATR (Average True Range)
-    df['atr'] = ta.volatility.AverageTrueRange(
-        high=df['High'], low=df['Low'], close=df['Close'], window=14
-    ).average_true_range()
+    # Tendance via les EMAs
+    df['ema_fast'] = ta.trend.ema_indicator(df['Close'], window=21)
+    df['ema_slow'] = ta.trend.ema_indicator(df['Close'], window=50)
     
-    # Calcul ADX (Average Directional Movement Index) et DMI
-    adx_indicator = ta.trend.ADXIndicator(
-        high=df['High'], low=df['Low'], close=df['Close'], window=14
-    )
+    # Indicateurs de volatilité et de force
+    df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+    adx_indicator = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
     df['adx'] = adx_indicator.adx()
     df['dmi_plus'] = adx_indicator.adx_pos()
     df['dmi_minus'] = adx_indicator.adx_neg()
-
-    df.dropna(inplace=True)
-    if df.empty:
-        return None
-
-    last_row = df.iloc[-1]
-    return pd.Series({
-        'Price': last_row['Close'],
-        'ATR': last_row['atr'],
-        'ATR %': (last_row['atr'] / last_row['Close']) * 100,
-        'ADX': last_row['adx'],
-        'DMI+': last_row['dmi_plus'],
-        'DMI-': last_row['dmi_minus'],
-        'Trend': 'Bullish' if last_row['dmi_plus'] > last_row['dmi_minus'] else 'Bearish'
-    })
-
-def generate_signals(row, min_adx_value):
-    if row['ADX'] < min_adx_value:
-        return 'Range (ADX faible)'
     
-    if row['ATR %'] < 0.2: # Seuil de volatilité minimum
-        return 'Faible Volatilité'
+    # Momentum
+    df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
     
-    # Condition d'achat
-    if row['Trend'] == 'Bullish' and row['DMI+'] > row['DMI-']:
-        sl = row['Price'] - (1.5 * row['ATR'])
-        tp = row['Price'] + (3 * row['ATR'])
-        return f'ACHAT | SL: {sl:.5f} | TP: {tp:.5f}'
-    
-    # Condition de vente
-    if row['Trend'] == 'Bearish' and row['DMI-'] > row['DMI+']:
-        sl = row['Price'] + (1.5 * row['ATR'])
-        tp = row['Price'] - (3 * row['ATR'])
-        return f'VENTE | SL: {sl:.5f} | TP: {tp:.5f}'
-    
-    return 'Attendre'
+    return df.dropna()
 
-def create_pdf_report(df, timeframe, scan_time):
-    class PDF(FPDF):
-        def header(self):
-            self.set_font('Arial', 'B', 15)
-            self.cell(0, 10, 'Rapport Volatility & Trend Screener', 0, 1, 'C')
-            self.set_font('Arial', '', 9)
-            self.cell(0, 8, f'Timeframe: {timeframe} | Généré le: {scan_time}', 0, 1, 'C')
-            self.ln(5)
+def determine_trend(df_row):
+    """Détermine la tendance ('Bullish', 'Bearish', 'Neutral') à partir d'une ligne de données."""
+    if df_row['ema_fast'] > df_row['ema_slow']:
+        return 'Bullish'
+    elif df_row['ema_fast'] < df_row['ema_slow']:
+        return 'Bearish'
+    return 'Neutral'
 
-        def footer(self):
-            self.set_y(-15)
-            self.set_font('Arial', 'I', 8)
-            self.cell(0, 10, 'Page ' + str(self.page_no()), 0, 0, 'C')
-
-    pdf = PDF(orientation='L', unit='mm', format='A4')
-    pdf.add_page()
+def find_sr_levels(df, lookback=50):
+    """Trouve les niveaux de support et résistance les plus proches."""
+    recent_df = df.tail(lookback)
+    price = recent_df['Close'].iloc[-1]
     
-    # Couleurs
-    header_color = (23, 34, 56)
-    buy_color = (46, 139, 87)
-    sell_color = (178, 34, 34)
-
-    # Entête du tableau
-    pdf.set_font('Arial', 'B', 10)
-    pdf.set_fill_color(*header_color)
-    pdf.set_text_color(255, 255, 255)
+    # find_peaks retourne les index des pics
+    res_idx, _ = find_peaks(recent_df['High'], distance=5, prominence=0.001)
+    sup_idx, _ = find_peaks(-recent_df['Low'], distance=5, prominence=0.001)
     
-    col_widths = {'Pair': 25, 'Price': 25, 'ATR %': 20, 'ADX': 15, 'Signal': 185}
-    for col_name, width in col_widths.items():
-        pdf.cell(width, 10, col_name, 1, 0, 'C', True)
-    pdf.ln()
-
-    # Corps du tableau
-    pdf.set_font('Arial', '', 9)
-    pdf.set_text_color(0, 0, 0)
+    resistances = recent_df['High'].iloc[res_idx]
+    supports = recent_df['Low'].iloc[sup_idx]
     
-    for _, row in df.iterrows():
-        # Définir la couleur du texte pour le signal
-        if 'ACHAT' in row['Signal']:
-            pdf.set_text_color(*buy_color)
-        elif 'VENTE' in row['Signal']:
-            pdf.set_text_color(*sell_color)
+    # Filtrer les niveaux pertinents (au-dessus/en dessous du prix actuel)
+    next_res = resistances[resistances > price].min() if not resistances[resistances > price].empty else np.nan
+    next_sup = supports[supports < price].max() if not supports[supports < price].empty else np.nan
+    
+    dist_to_res = ((next_res - price) / price) * 100 if pd.notna(next_res) else np.nan
+    dist_to_sup = ((price - next_sup) / price) * 100 if pd.notna(next_sup) else np.nan
+    
+    return next_sup, next_res, dist_to_sup, dist_to_res
+
+
+# ==============================================================================
+# 2. LOGIQUE PRINCIPALE D'ANALYSE ET DE FILTRAGE
+# ==============================================================================
+
+def run_full_analysis(pairs_list, params):
+    """Exécute l'analyse complète sur toutes les paires et retourne les paires filtrées."""
+    filtered_pairs = []
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, pair in enumerate(pairs_list):
+        status_text.text(f"Analyse de {pair.replace('_', '/')}... ({i+1}/{len(pairs_list)})")
+        
+        # 1. Récupération des données
+        multi_tf_data = fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1'])
+        if not all(tf in multi_tf_data for tf in ['D', 'H4', 'H1']):
+            continue
+
+        # 2. Calcul des indicateurs pour chaque timeframe
+        data_D = calculate_all_indicators(multi_tf_data['D'])
+        data_H4 = calculate_all_indicators(multi_tf_data['H4'])
+        data_H1 = calculate_all_indicators(multi_tf_data['H1'])
+
+        if data_D is None or data_H4 is None or data_H1 is None:
+            continue
+            
+        # 3. Extraction des dernières valeurs
+        last_D, last_H4, last_H1 = data_D.iloc[-1], data_H4.iloc[-1], data_H1.iloc[-1]
+        price = last_H1['Close']
+        score = 0
+        
+        # --- APPLICATION DES FILTRES ---
+        
+        # Condition A: Volatilité suffisante (sur le Daily)
+        atr_percent = (last_D['atr'] / price) * 100
+        if atr_percent < params['min_atr_percent']: continue
+        score += 25
+
+        # Condition B: Tendance forte et unidirectionnelle (H4 & H1)
+        trend_H4 = determine_trend(last_H4)
+        trend_H1 = determine_trend(last_H1)
+        
+        adx_strong_H4 = last_H4['adx'] > params['min_adx']
+        adx_strong_H1 = last_H1['adx'] > params['min_adx']
+        
+        if not (adx_strong_H4 and adx_strong_H1): continue
+        score += 25
+
+        # Condition C: Alignement des tendances
+        if trend_H1 != trend_H4 or trend_H1 == 'Neutral': continue
+        score += 25
+        
+        # Vérification de la directionnalité du DMI
+        direction = ""
+        if trend_H1 == 'Bullish' and last_H1['dmi_plus'] > last_H1['dmi_minus'] and last_H4['dmi_plus'] > last_H4['dmi_minus']:
+            direction = 'Achat'
+        elif trend_H1 == 'Bearish' and last_H1['dmi_minus'] > last_H1['dmi_plus'] and last_H4['dmi_minus'] > last_H4['dmi_plus']:
+            direction = 'Vente'
         else:
-            pdf.set_text_color(128, 128, 128)
+            continue # Le DMI ne confirme pas la tendance des EMAs
 
-        pdf.cell(col_widths['Pair'], 10, row.name, 1, 0, 'L')
-        pdf.set_text_color(0, 0, 0) # Revenir au noir pour les autres colonnes
-        pdf.cell(col_widths['Price'], 10, f"{row['Price']:.5f}", 1, 0, 'C')
-        pdf.cell(col_widths['ATR %'], 10, f"{row['ATR %']:.2f}%", 1, 0, 'C')
-        pdf.cell(col_widths['ADX'], 10, f"{row['ADX']:.1f}", 1, 0, 'C')
+        # Condition D: RSI dans une zone favorable
+        if not (params['rsi_min'] < last_H1['rsi'] < params['rsi_max']): continue
+        score += 25
         
-        # Remettre la couleur pour la colonne Signal
-        if 'ACHAT' in row['Signal']: pdf.set_text_color(*buy_color)
-        elif 'VENTE' in row['Signal']: pdf.set_text_color(*sell_color)
-        else: pdf.set_text_color(128, 128, 128)
-        
-        pdf.cell(col_widths['Signal'], 10, row['Signal'], 1, 0, 'L')
-        pdf.ln()
-        pdf.set_text_color(0, 0, 0) # Réinitialiser la couleur pour la prochaine ligne
+        # 4. Informations supplémentaires
+        sup, res, dist_sup, dist_res = find_sr_levels(multi_tf_data['H1'])
 
-    return bytes(pdf.output())
+        # Si on arrive ici, la paire a passé tous les filtres
+        filtered_pairs.append({
+            'Paire': pair.replace('_', '/'),
+            'Direction': direction,
+            'Prix': price,
+            'ATR (D) %': atr_percent,
+            'ADX H1': last_H1['adx'],
+            'ADX H4': last_H4['adx'],
+            'RSI H1': last_H1['rsi'],
+            'Prochain Supp': sup,
+            'Prochaine Rés': res,
+            'Score': score
+        })
+        progress_bar.progress((i + 1) / len(pairs_list))
 
-# --- Interface Utilisateur ---
-st.markdown('<h1 class="screener-header">📈 Volatility & Trend Screener (OANDA)</h1>', unsafe_allow_html=True)
+    status_text.empty()
+    progress_bar.empty()
+    return pd.DataFrame(filtered_pairs)
 
-# Barre latérale pour les contrôles
+
+# ==============================================================================
+# 3. INTERFACE UTILISATEUR (STREAMLIT)
+# ==============================================================================
+
+st.markdown('<h1 class="screener-header">🎯 Forex Intraday Screener Pro</h1>', unsafe_allow_html=True)
+
+# --- BARRE LATÉRALE DE CONTRÔLES ---
 with st.sidebar:
-    st.header("⚙️ Paramètres du Scan")
-    selected_timeframe_key = st.selectbox('Timeframe', list(TIMEFRAME_MAP.keys()), index=2)
-    min_adx_value = st.slider('ADX Minimum', 15, 30, 20, help="Filtre pour la force de la tendance. Une valeur plus élevée signifie une tendance plus forte.")
+    st.header("🛠️ Paramètres du Filtre")
+    params = {
+        'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.1, 2.0, 0.5, 0.1, help="Volatilité minimale requise."),
+        'min_adx': st.slider("ADX Minimum (H1 & H4)", 15, 30, 20, 1, help="Force de tendance minimale."),
+        'rsi_min': st.slider("RSI H1 Minimum", 10, 40, 30, 1),
+        'rsi_max': st.slider("RSI H1 Maximum", 60, 90, 70, 1),
+    }
 
-# Logique de scan
+# --- LOGIQUE DE SCAN ---
 if 'scan_done' not in st.session_state:
     st.session_state.scan_done = False
 
 col1, col2, _ = st.columns([1.5, 1.5, 5])
 with col1:
-    if st.button("⚡ Lancer / Rescan", use_container_width=True):
-        st.session_state.scan_done = False # Forcer un rescan
+    if st.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
+        st.session_state.scan_done = False
         st.cache_data.clear()
 
 if not st.session_state.scan_done:
-    with st.spinner(f"Analyse en cours sur {len(FOREX_PAIRS)} paires ({selected_timeframe_key})..."):
-        all_data = []
-        progress_bar = st.progress(0)
-        for i, pair in enumerate(FOREX_PAIRS):
-            df = get_oanda_data(pair, TIMEFRAME_MAP[selected_timeframe_key])
-            if not df.empty:
-                indicators = calculate_indicators(df)
-                if indicators is not None:
-                    indicators['Pair'] = pair
-                    all_data.append(indicators)
-            progress_bar.progress((i + 1) / len(FOREX_PAIRS))
-        
-        if all_data:
-            results_df = pd.DataFrame(all_data).set_index('Pair')
-            results_df['Signal'] = results_df.apply(lambda row: generate_signals(row, min_adx_value), axis=1)
-            st.session_state.results = results_df
-            st.session_state.scan_time = datetime.now()
-        
-        st.session_state.scan_done = True
-        st.rerun()
+    st.session_state.results_df = run_full_analysis(FOREX_PAIRS, params)
+    st.session_state.scan_time = datetime.now()
+    st.session_state.scan_done = True
+    st.rerun()
 
-# Affichage des résultats
-if st.session_state.scan_done and 'results' in st.session_state:
-    results_df = st.session_state.results
-    scan_time_str = st.session_state.scan_time.strftime("%Y-%m-%d %H:%M:%S")
+# --- AFFICHAGE DES RÉSULTATS ---
+if st.session_state.scan_done and 'results_df' in st.session_state:
+    df = st.session_state.results_df
+    scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
 
-    st.markdown(f'<div class="update-info">🔄 Dernière mise à jour : {scan_time_str} (Données OANDA)</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
     
-    with col2:
-        pdf_data = create_pdf_report(results_df, selected_timeframe_key, scan_time_str)
-        st.download_button(
-            label="📄 Exporter en PDF",
-            data=pdf_data,
-            file_name=f"Volatility_Report_{selected_timeframe_key.replace(' ', '')}_{datetime.now().strftime('%Y%m%d')}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
-
-    st.subheader(f"Signaux de Trading sur {selected_timeframe_key} (ADX > {min_adx_value})")
-    
-    # Filtrer pour l'affichage (ne montrer que les signaux clairs)
-    display_df = results_df[results_df['Signal'].str.contains('ACHAT|VENTE')]
-
-    if display_df.empty:
-        st.info("Aucun signal d'achat ou de vente correspondant aux critères actuels n'a été trouvé.")
+    if df.empty:
+        st.info("Aucune paire ne correspond à tous les critères de filtrage. Essayez d'assouplir les paramètres.")
     else:
-        # Formatage pour un affichage propre
-        formatted_df = display_df.copy()
-        formatted_df['Price'] = formatted_df['Price'].map('{:.5f}'.format)
-        formatted_df['ATR %'] = formatted_df['ATR %'].map('{:.2f}%'.format)
-        formatted_df['ADX'] = formatted_df['ADX'].map('{:.1f}'.format)
+        st.subheader(f"🏆 {len(df)} Opportunités trouvées")
+
+        # Formatage pour l'affichage
+        display_df = df.copy()
+        for col in ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1', 'Prochain Supp', 'Prochaine Rés']:
+            display_df[col] = display_df[col].map('{:.2f}'.format)
         
-        st.dataframe(formatted_df[['Price', 'ATR %', 'ADX', 'Trend', 'Signal']], use_container_width=True)
+        # Coloration du DataFrame
+        def style_dataframe(df_to_style):
+            def style_direction(direction):
+                color = 'green' if direction == 'Achat' else 'red'
+                return f'color: {color}; font-weight: bold;'
+            
+            return df_to_style.style.applymap(style_direction, subset=['Direction'])
+        
+        st.dataframe(style_dataframe(display_df.set_index('Paire')), use_container_width=True)
+        
+        # Bouton d'export PDF (à implémenter)
+        with col2:
+            st.download_button(
+                label="📄 Exporter en PDF",
+                data=b"", # Remplacer par la fonction de génération PDF
+                file_name=f"Screener_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
 
-    with st.expander("Voir tous les résultats (y compris 'Attendre' et 'Range')"):
-        st.dataframe(results_df, use_container_width=True)
-
-else:
-    st.info("Cliquez sur 'Lancer / Rescan' pour commencer l'analyse.")
-
-# Guide et Footer
-with st.expander("ℹ️ Guide des Indicateurs"):
+# --- GUIDE UTILISATEUR ---
+with st.expander("ℹ️ Comprendre la Stratégie et les Colonnes"):
     st.markdown("""
-    - **ATR % (Average True Range Percentage)**: Mesure la volatilité en pourcentage du prix. Une valeur élevée indique une forte volatilité.
-    - **ADX (Average Directional Movement Index)**: Mesure la force de la tendance, quelle que soit sa direction. Un ADX > 20-25 indique une tendance établie.
-    - **DMI+ / DMI- (Directional Movement Indicators)**: Indiquent la direction de la tendance. Si DMI+ est au-dessus de DMI-, la tendance est haussière, et inversement.
-    - **Signal**: Le signal de trading généré. Le Stop Loss (SL) est calculé à 1.5x l'ATR et le Take Profit (TP) à 3x l'ATR.
+    Cette application filtre les paires de devises en se basant sur une confluence de conditions pour le trading intraday :
+    - **Condition A (Volatilité)**: L'ATR sur le graphique journalier doit être supérieur au seuil défini (ex: > 0.5% du prix).
+    - **Condition B (Force de Tendance)**: L'ADX sur H1 et H4 doit être supérieur au seuil (ex: > 20) pour confirmer une tendance forte.
+    - **Condition C (Alignement)**: La tendance (définie par les EMA 21/50) doit être la même sur H1 et H4. Le DMI doit aussi confirmer la direction.
+    - **Condition D (Momentum)**: Le RSI sur H1 doit être dans une zone "saine" (ex: entre 30 et 70) pour éviter les entrées sur des marchés déjà sur-étendus.
+    - **Score**: Une note sur 100 indiquant la robustesse du signal (25 points par condition majeure remplie).
+    - **Support/Résistance**: Les niveaux de prix clés les plus proches, identifiés sur le graphique H1.
     """)
 
 # --- END OF FILE app.py ---
+ 

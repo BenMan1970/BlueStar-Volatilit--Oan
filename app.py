@@ -10,6 +10,7 @@ import oandapyV20.endpoints.instruments as instruments
 from fpdf import FPDF
 import ta
 from scipy.signal import find_peaks
+import pytz # <--- CORRECTION : Import manquant
 
 warnings.filterwarnings('ignore')
 
@@ -64,7 +65,8 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
                     for c in r.response['candles']]
             if not data: continue
             df = pd.DataFrame(data)
-            df['Time'] = pd.to_datetime(df['Time']).dt.tz_convert(TIMEZONE)
+            # Les données OANDA sont en UTC, on les localise
+            df['Time'] = pd.to_datetime(df['Time']).dt.tz_localize('UTC').dt.tz_convert(TIMEZONE)
             all_data[tf] = df
         except Exception:
             continue
@@ -234,16 +236,20 @@ with col1:
     if st.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
         st.session_state.scan_done = False
         st.cache_data.clear()
+        st.rerun() # Rerun pour relancer la logique de scan
 
+# La logique de scan doit être en dehors du bouton pour s'exécuter après le rerun
 if not st.session_state.scan_done:
-    st.session_state.results_df = run_full_analysis(FOREX_PAIRS, params)
-    st.session_state.scan_time = datetime.now()
-    st.session_state.scan_done = True
-    st.rerun()
+    with st.spinner("Analyse en cours..."):
+        st.session_state.results_df = run_full_analysis(FOREX_PAIRS, params)
+        st.session_state.scan_time = datetime.now()
+        st.session_state.scan_done = True
+        st.rerun()
 
 # --- AFFICHAGE DES RÉSULTATS ---
 if st.session_state.scan_done and 'results_df' in st.session_state:
     df = st.session_state.results_df
+    # CORRECTION : Utiliser pytz pour la conversion de fuseau horaire
     scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
 
     st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
@@ -261,7 +267,7 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
         # Coloration du DataFrame
         def style_dataframe(df_to_style):
             def style_direction(direction):
-                color = 'green' if direction == 'Achat' else 'red'
+                color = 'lightgreen' if direction == 'Achat' else 'lightcoral'
                 return f'color: {color}; font-weight: bold;'
             
             return df_to_style.style.applymap(style_direction, subset=['Direction'])
@@ -291,4 +297,3 @@ with st.expander("ℹ️ Comprendre la Stratégie et les Colonnes"):
     """)
 
 # --- END OF FILE app.py ---
- 

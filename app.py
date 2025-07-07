@@ -50,7 +50,6 @@ TIMEZONE = 'Europe/Paris'
 # ==============================================================================
 # 1. FONCTIONS DE CALCUL ET DE LOGIQUE
 # ==============================================================================
-
 @st.cache_data(ttl=600, show_spinner="Fetching OANDA data...")
 def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
@@ -60,9 +59,7 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
         try:
             r = instruments.InstrumentsCandles(instrument=pair, params=params)
             api.request(r)
-            data = [{'Time': c['time'], 'Open': float(c['mid']['o']), 'High': float(c['mid']['h']), 
-                     'Low': float(c['mid']['l']), 'Close': float(c['mid']['c'])} 
-                    for c in r.response['candles']]
+            data = [{'Time': c['time'], 'Open': float(c['mid']['o']), 'High': float(c['mid']['h']), 'Low': float(c['mid']['l']), 'Close': float(c['mid']['c'])} for c in r.response['candles']]
             if not data: continue
             df = pd.DataFrame(data)
             df['Time'] = pd.to_datetime(df['Time']).dt.tz_localize('UTC').dt.tz_convert(TIMEZONE)
@@ -70,7 +67,6 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
         except Exception:
             continue
     return all_data
-
 
 def calculate_all_indicators(df):
     if df is None or len(df) < 50: return None
@@ -85,12 +81,11 @@ def calculate_all_indicators(df):
     return df.dropna()
 
 def get_star_rating(score):
-    return "⭐" * score + "☆" * (5 - score)
+    return "⭐" * int(score) + "☆" * (5 - int(score))
 
 # ==============================================================================
-# 2. LOGIQUE PRINCIPALE D'ANALYSE (SCORING FLEXIBLE)
+# 2. LOGIQUE PRINCIPALE D'ANALYSE (CORRIGÉE)
 # ==============================================================================
-
 def run_full_analysis(instruments_list, params):
     all_results = []
     progress_bar = st.progress(0)
@@ -111,27 +106,34 @@ def run_full_analysis(instruments_list, params):
         price = last_H1['Close']
         score = 0
         
-        # --- SYSTÈME DE NOTATION ---
+        # --- CORRECTION DU SYSTÈME DE NOTATION ---
         
+        # Étoile 1: Volatilité
         atr_percent = (last_D['atr'] / price) * 100
-        if atr_percent < params['min_atr_percent']: continue
-        score += 1
+        # On ne met plus de 'continue', on ajoute simplement un point si la condition est remplie
+        if atr_percent >= params['min_atr_percent']:
+            score += 1
 
         trend_H4 = 'Bullish' if last_H4['ema_fast'] > last_H4['ema_slow'] else 'Bearish'
         trend_H1 = 'Bullish' if last_H1['ema_fast'] > last_H1['ema_slow'] else 'Bearish'
         
+        # Étoile 2: Contexte de Tendance H4
         if last_H4['adx'] > params['min_adx'] and ((trend_H4 == 'Bullish' and last_H4['dmi_plus'] > last_H4['dmi_minus']) or (trend_H4 == 'Bearish' and last_H4['dmi_minus'] > last_H4['dmi_plus'])):
             score += 1
             
+        # Étoile 3: Tendance d'Exécution H1
         if last_H1['adx'] > params['min_adx'] and ((trend_H1 == 'Bullish' and last_H1['dmi_plus'] > last_H1['dmi_minus']) or (trend_H1 == 'Bearish' and last_H1['dmi_minus'] > last_H1['dmi_plus'])):
             score += 1
 
+        # Étoile 4: Confluence des Tendances
         if trend_H1 == trend_H4:
             score += 1
         
+        # Étoile 5: Momentum Optimal
         if params['rsi_min'] < last_H1['rsi'] < params['rsi_max']:
             score += 1
 
+        # On ajoute TOUS les instruments à la liste, même ceux avec un score faible
         all_results.append({
             'Paire': instrument.replace('_', '/'), 'Direction': trend_H1, 'Prix': price,
             'ATR (D) %': atr_percent, 'ADX H1': last_H1['adx'], 'ADX H4': last_H4['adx'],
@@ -143,6 +145,7 @@ def run_full_analysis(instruments_list, params):
     progress_bar.empty()
     return pd.DataFrame(all_results)
 
+# ... (Le reste du code, notamment la fonction PDF et l'UI, reste identique) ...
 # ==============================================================================
 # 3. FONCTION D'EXPORT PDF (PLACEHOLDER)
 # ==============================================================================
@@ -154,11 +157,12 @@ def create_pdf_report(df, params, scan_time):
             self.cell(0, 5, f'Scan du {scan_time}', 0, 1, 'C'); self.ln(2)
         def footer(self): self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, 'Page ' + str(self.page_no()), 0, 0, 'C')
     pdf = PDF(orientation='L', unit='mm', format='A4'); pdf.add_page()
-    # Placeholder
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(0, 10, 'Rapport des opportunites', 0, 1, 'L')
     if not df.empty:
-        for index, row in df.iterrows():
+        df_copy = df.copy()
+        df_copy['Note'] = df_copy['Score'].apply(get_star_rating)
+        for index, row in df_copy.iterrows():
             pdf.set_font('Arial', '', 10)
             pdf.cell(0, 8, f"{row['Paire']} - {row['Note']} - {row['Direction']}", 0, 1)
     return bytes(pdf.output())
@@ -171,7 +175,7 @@ st.markdown('<h1 class="screener-header">🎯 Forex & Indices Screener Pro</h1>'
 
 with st.sidebar:
     st.header("🛠️ Paramètres du Filtre")
-    min_score_to_display = st.slider("Note minimale (étoiles)", 1, 5, 3, 1, help="Affiche les opportunités avec au moins cette note.")
+    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 5, 3, 1, help="Affiche les opportunités avec au moins cette note.")
     params = {
         'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.1, 2.0, 0.5, 0.05),
         'min_adx': st.slider("ADX Minimum (H1 & H4)", 15, 30, 20, 1),
@@ -191,48 +195,30 @@ if not st.session_state.scan_done:
         st.session_state.results_df = run_full_analysis(INSTRUMENTS_LIST, params)
         st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
 
-# --- AFFICHAGE DES RÉSULTATS (CORRIGÉ) ---
 if st.session_state.scan_done and 'results_df' in st.session_state:
     df = st.session_state.results_df
     scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
-
     st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
     
-    # CORRECTION : On vérifie si le DataFrame est vide AVANT d'essayer de le filtrer
     if df.empty:
-        st.info("Aucune opportunité trouvée, même avec les filtres les plus souples. Le marché est peut-être sans volatilité.")
+        st.error("Un problème est survenu lors de la récupération des données. Veuillez réessayer.")
     else:
-        # Le filtrage par score se fait maintenant ici, en toute sécurité
         filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
-        
         if filtered_df.empty:
-            st.info(f"Aucune opportunité trouvée avec une note d'au moins {min_score_to_display} étoile(s). Essayez de baisser la note minimale dans la barre latérale.")
+            st.info(f"Aucune opportunité trouvée avec une note d'au moins {min_score_to_display} étoile(s). Essayez de baisser la note minimale.")
         else:
             st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
-            
             with col2:
-                # La fonction PDF est maintenant appelée avec les données filtrées
                 pdf_data = create_pdf_report(filtered_df, params, scan_time_str)
-                st.download_button(
-                    label="📄 Exporter en PDF", 
-                    data=pdf_data, 
-                    file_name=f"Screener_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+                st.download_button(label="📄 Exporter en PDF", data=pdf_data, file_name=f"Screener_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
             
-            # Création de la colonne Étoiles
             filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
-            
-            # Formatage pour l'affichage
             display_df = filtered_df.copy()
             cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1']
             for col in cols_to_format:
                 display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
             
-            # Colonnes à afficher
             display_cols = ['Note', 'Direction', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1']
-            
             def style_dataframe(df_to_style):
                 def style_direction(direction):
                     color = 'lightgreen' if direction == 'Bullish' else 'lightcoral'
@@ -251,4 +237,3 @@ with st.expander("ℹ️ Comprendre la Stratégie et la Notation"):
     - ⭐ **Momentum**: RSI H1 dans la zone de confort (ni sur-vendu, ni sur-acheté).
     """)
 # --- END OF FILE app.py ---
-    

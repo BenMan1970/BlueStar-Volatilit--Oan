@@ -4,3 +4,4 @@ numpy
 oandapyV20
 fpdf2
 ta
+scipy

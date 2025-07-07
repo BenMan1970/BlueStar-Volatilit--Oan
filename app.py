@@ -53,7 +53,6 @@ TIMEZONE = 'Europe/Paris'
 
 @st.cache_data(ttl=600, show_spinner="Fetching OANDA data...")
 def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
-    # (Code de cette fonction inchangé)
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
     all_data = {}
     for tf in timeframes:
@@ -74,7 +73,6 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
 
 
 def calculate_all_indicators(df):
-    # (Code de cette fonction inchangé)
     if df is None or len(df) < 50: return None
     df['ema_fast'] = ta.trend.ema_indicator(df['Close'], window=21)
     df['ema_slow'] = ta.trend.ema_indicator(df['Close'], window=50)
@@ -87,11 +85,10 @@ def calculate_all_indicators(df):
     return df.dropna()
 
 def get_star_rating(score):
-    """Convertit un score numérique en emojis étoiles."""
     return "⭐" * score + "☆" * (5 - score)
 
 # ==============================================================================
-# 2. LOGIQUE PRINCIPALE D'ANALYSE (REMANIÉE AVEC LE NOUVEAU SCORING)
+# 2. LOGIQUE PRINCIPALE D'ANALYSE (SCORING FLEXIBLE)
 # ==============================================================================
 
 def run_full_analysis(instruments_list, params):
@@ -114,35 +111,24 @@ def run_full_analysis(instruments_list, params):
         price = last_H1['Close']
         score = 0
         
-        # --- NOUVEAU SYSTÈME DE NOTATION ---
+        # --- SYSTÈME DE NOTATION ---
         
-        # Étoile 1: Volatilité (prérequis)
         atr_percent = (last_D['atr'] / price) * 100
-        if atr_percent < params['min_atr_percent']:
-            continue # Si pas de volatilité, on ignore complètement
+        if atr_percent < params['min_atr_percent']: continue
         score += 1
 
-        # Déterminer les tendances et directions
         trend_H4 = 'Bullish' if last_H4['ema_fast'] > last_H4['ema_slow'] else 'Bearish'
         trend_H1 = 'Bullish' if last_H1['ema_fast'] > last_H1['ema_slow'] else 'Bearish'
         
-        # Étoile 2: Contexte de Tendance H4
-        if last_H4['adx'] > params['min_adx'] and \
-           ((trend_H4 == 'Bullish' and last_H4['dmi_plus'] > last_H4['dmi_minus']) or \
-            (trend_H4 == 'Bearish' and last_H4['dmi_minus'] > last_H4['dmi_plus'])):
+        if last_H4['adx'] > params['min_adx'] and ((trend_H4 == 'Bullish' and last_H4['dmi_plus'] > last_H4['dmi_minus']) or (trend_H4 == 'Bearish' and last_H4['dmi_minus'] > last_H4['dmi_plus'])):
             score += 1
             
-        # Étoile 3: Tendance d'Exécution H1
-        if last_H1['adx'] > params['min_adx'] and \
-           ((trend_H1 == 'Bullish' and last_H1['dmi_plus'] > last_H1['dmi_minus']) or \
-            (trend_H1 == 'Bearish' and last_H1['dmi_minus'] > last_H1['dmi_plus'])):
+        if last_H1['adx'] > params['min_adx'] and ((trend_H1 == 'Bullish' and last_H1['dmi_plus'] > last_H1['dmi_minus']) or (trend_H1 == 'Bearish' and last_H1['dmi_minus'] > last_H1['dmi_plus'])):
             score += 1
 
-        # Étoile 4: Confluence des Tendances
         if trend_H1 == trend_H4:
             score += 1
         
-        # Étoile 5: Momentum Optimal
         if params['rsi_min'] < last_H1['rsi'] < params['rsi_max']:
             score += 1
 
@@ -158,23 +144,27 @@ def run_full_analysis(instruments_list, params):
     return pd.DataFrame(all_results)
 
 # ==============================================================================
-# 3. FONCTION D'EXPORT PDF (INCHANGÉE POUR LE MOMENT)
+# 3. FONCTION D'EXPORT PDF (PLACEHOLDER)
 # ==============================================================================
 def create_pdf_report(df, params, scan_time):
-    # (Cette fonction peut être gardée telle quelle ou adaptée pour inclure les étoiles)
-    # Pour l'instant on la laisse pour ne pas introduire d'erreur
+    # (Cette fonction peut être complétée plus tard)
     class PDF(FPDF):
         def header(self):
             self.set_font('Arial', 'B', 15); self.cell(0, 10, 'Rapport - Screener Intraday Pro', 0, 1, 'C'); self.set_font('Arial', '', 9)
             self.cell(0, 5, f'Scan du {scan_time}', 0, 1, 'C'); self.ln(2)
         def footer(self): self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, 'Page ' + str(self.page_no()), 0, 0, 'C')
-    pdf = PDF(orientation='L', unit='mm', format='A4'); pdf.add_page(); pdf.set_font('Arial', 'B', 8); pdf.set_fill_color(230, 230, 230)
-    # ... le reste du code de la fonction PDF est long, on le suppose correct ...
-    return bytes(b"PDF generation placeholder") # Placeholder pour éviter les erreurs
-
+    pdf = PDF(orientation='L', unit='mm', format='A4'); pdf.add_page()
+    # Placeholder
+    pdf.set_font('Arial', 'B', 12)
+    pdf.cell(0, 10, 'Rapport des opportunites', 0, 1, 'L')
+    if not df.empty:
+        for index, row in df.iterrows():
+            pdf.set_font('Arial', '', 10)
+            pdf.cell(0, 8, f"{row['Paire']} - {row['Note']} - {row['Direction']}", 0, 1)
+    return bytes(pdf.output())
 
 # ==============================================================================
-# 4. INTERFACE UTILISATEUR (REMANIÉE)
+# 4. INTERFACE UTILISATEUR
 # ==============================================================================
 
 st.markdown('<h1 class="screener-header">🎯 Forex & Indices Screener Pro</h1>', unsafe_allow_html=True)
@@ -201,44 +191,55 @@ if not st.session_state.scan_done:
         st.session_state.results_df = run_full_analysis(INSTRUMENTS_LIST, params)
         st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
 
+# --- AFFICHAGE DES RÉSULTATS (CORRIGÉ) ---
 if st.session_state.scan_done and 'results_df' in st.session_state:
     df = st.session_state.results_df
     scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
 
     st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
     
-    # Filtrer par le score minimum choisi par l'utilisateur
-    filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
-    
-    if filtered_df.empty:
-        st.info(f"Aucune opportunité trouvée avec une note d'au moins {min_score_to_display} étoile(s). Essayez d'assouplir les paramètres.")
+    # CORRECTION : On vérifie si le DataFrame est vide AVANT d'essayer de le filtrer
+    if df.empty:
+        st.info("Aucune opportunité trouvée, même avec les filtres les plus souples. Le marché est peut-être sans volatilité.")
     else:
-        st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
+        # Le filtrage par score se fait maintenant ici, en toute sécurité
+        filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
         
-        with col2:
-            # On passera filtered_df à la fonction PDF plus tard
-            # pdf_data = create_pdf_report(filtered_df, params, scan_time_str)
-            st.download_button(label="📄 Exporter en PDF", data=b"", file_name="Screener_Report.pdf", use_container_width=True)
-        
-        # Création de la colonne Étoiles
-        filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
-        
-        # Formatage pour l'affichage
-        display_df = filtered_df.copy()
-        cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1']
-        for col in cols_to_format:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-        
-        # Colonnes à afficher
-        display_cols = ['Note', 'Direction', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1']
-        
-        def style_dataframe(df_to_style):
-            def style_direction(direction):
-                color = 'lightgreen' if direction == 'Bullish' else 'lightcoral'
-                return f'color: {color}; font-weight: bold;'
-            return df_to_style.style.applymap(style_direction, subset=['Direction'])
-        
-        st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
+        if filtered_df.empty:
+            st.info(f"Aucune opportunité trouvée avec une note d'au moins {min_score_to_display} étoile(s). Essayez de baisser la note minimale dans la barre latérale.")
+        else:
+            st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
+            
+            with col2:
+                # La fonction PDF est maintenant appelée avec les données filtrées
+                pdf_data = create_pdf_report(filtered_df, params, scan_time_str)
+                st.download_button(
+                    label="📄 Exporter en PDF", 
+                    data=pdf_data, 
+                    file_name=f"Screener_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            
+            # Création de la colonne Étoiles
+            filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
+            
+            # Formatage pour l'affichage
+            display_df = filtered_df.copy()
+            cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1']
+            for col in cols_to_format:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+            
+            # Colonnes à afficher
+            display_cols = ['Note', 'Direction', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4', 'RSI H1']
+            
+            def style_dataframe(df_to_style):
+                def style_direction(direction):
+                    color = 'lightgreen' if direction == 'Bullish' else 'lightcoral'
+                    return f'color: {color}; font-weight: bold;'
+                return df_to_style.style.applymap(style_direction, subset=['Direction'])
+            
+            st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
 
 with st.expander("ℹ️ Comprendre la Stratégie et la Notation"):
     st.markdown("""
@@ -249,3 +250,5 @@ with st.expander("ℹ️ Comprendre la Stratégie et la Notation"):
     - ⭐ **Confluence**: La tendance H1 est la même que la tendance H4.
     - ⭐ **Momentum**: RSI H1 dans la zone de confort (ni sur-vendu, ni sur-acheté).
     """)
+# --- END OF FILE app.py ---
+    

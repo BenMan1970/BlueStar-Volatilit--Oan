@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore')
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(
-    page_title="Forex & Indices Screener Pro",
+    page_title="Forex & Gold Screener Pro",
     page_icon="🎯",
     layout="wide"
 )
@@ -38,12 +38,16 @@ except KeyError:
     st.stop()
 
 # --- CONSTANTES ---
+# ### CORRECTION : Liste simplifiée pour le test
 INSTRUMENTS_LIST = [
+    # Majors Forex
     'EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD', 
+    # Crosses Forex
     'EUR_JPY', 'GBP_JPY', 'CHF_JPY', 'AUD_JPY', 'CAD_JPY', 'NZD_JPY',
     'EUR_GBP', 'EUR_AUD', 'EUR_CAD', 'EUR_CHF', 'EUR_NZD',
     'GBP_AUD', 'GBP_CAD', 'GBP_CHF', 'GBP_NZD',
-    'XAU_USD', 'US30_USD', 'NAS100_USD', 'SPX500_USD'
+    # Métaux
+    'XAU_USD' # Or
 ]
 TIMEZONE = 'Europe/Paris'
 
@@ -51,7 +55,7 @@ TIMEZONE = 'Europe/Paris'
 # 1. FONCTIONS DE CALCUL ET DE LOGIQUE
 # ==============================================================================
 
-@st.cache_data(ttl=600, show_spinner=False) # Spinner géré manuellement
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
     all_data = {}
@@ -61,16 +65,13 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
             r = instruments.InstrumentsCandles(instrument=pair, params=params)
             api.request(r)
             if 'candles' not in r.response or not r.response['candles']:
-                # ### CORRECTION : Gérer le cas où il n'y a pas de bougies
-                return None # Retourner None si les données sont vides pour un timeframe
+                return None 
 
             data = [{'Time': c['time'], 'Open': float(c['mid']['o']), 'High': float(c['mid']['h']), 'Low': float(c['mid']['l']), 'Close': float(c['mid']['c'])} for c in r.response['candles']]
             df = pd.DataFrame(data)
             df['Time'] = pd.to_datetime(df['Time']).dt.tz_localize('UTC').dt.tz_convert(TIMEZONE)
             all_data[tf] = df
-        except Exception as e:
-            # ### CORRECTION : Si une requête API échoue pour un instrument, on retourne None
-            # st.toast(f"Impossible de récupérer les données pour {pair}. Erreur API.", icon="⚠️")
+        except Exception:
             return None
     return all_data
 
@@ -90,7 +91,7 @@ def get_star_rating(score):
     return "⭐" * int(score) + "☆" * (5 - int(score))
 
 # ==============================================================================
-# 2. LOGIQUE PRINCIPALE D'ANALYSE (CORRIGÉE)
+# 2. LOGIQUE PRINCIPALE D'ANALYSE
 # ==============================================================================
 def run_full_analysis(instruments_list, params):
     all_results = []
@@ -103,7 +104,6 @@ def run_full_analysis(instruments_list, params):
         progress_bar.progress((i + 1) / len(instruments_list), text=progress_text)
         
         multi_tf_data = fetch_multi_timeframe_data(instrument)
-        # ### CORRECTION : Meilleure gestion des échecs de récupération
         if multi_tf_data is None:
             failed_instruments.append(instrument)
             continue
@@ -140,7 +140,6 @@ def run_full_analysis(instruments_list, params):
         
     return pd.DataFrame(all_results)
 
-# ... (Le reste du code, notamment la fonction PDF et l'UI, reste identique à la version précédente) ...
 # ==============================================================================
 # 3. FONCTION D'EXPORT PDF
 # ==============================================================================
@@ -164,7 +163,7 @@ def create_pdf_report(df, params, scan_time):
 # ==============================================================================
 # 4. INTERFACE UTILISATEUR
 # ==============================================================================
-st.markdown('<h1 class="screener-header">🎯 Forex & Indices Screener Pro</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="screener-header">🎯 Forex & Gold Screener Pro</h1>', unsafe_allow_html=True)
 with st.sidebar:
     st.header("🛠️ Paramètres du Filtre")
     min_score_to_display = st.slider("Note minimale (étoiles)", 0, 5, 3, 1, help="Affiche les opportunités avec au moins cette note.")
@@ -180,14 +179,15 @@ with col1:
     if st.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
         st.session_state.scan_done = False; st.cache_data.clear(); st.rerun()
 if not st.session_state.scan_done:
-    st.session_state.results_df = run_full_analysis(INSTRUMENTS_LIST, params)
-    st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
+    with st.spinner("Analyse en cours..."):
+        st.session_state.results_df = run_full_analysis(INSTRUMENTS_LIST, params)
+        st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
 if st.session_state.scan_done and 'results_df' in st.session_state:
     df = st.session_state.results_df
     scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
     st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
     if df.empty:
-        st.error("Aucune donnée n'a pu être récupérée pour les instruments. Vérifiez que les noms d'instruments sont corrects ou l'état de l'API OANDA.")
+        st.error("Aucune donnée n'a pu être récupérée. Cela peut être dû à un problème de connexion avec l'API OANDA ou à un problème avec votre clé d'accès.")
     else:
         filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
         if filtered_df.empty:
@@ -211,5 +211,14 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
                     return f'color: {color}; font-weight: bold;'
                 return df_to_style.style.applymap(style_direction, subset=['Direction'])
             st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
+
 with st.expander("ℹ️ Comprendre la Stratégie et la Notation"):
-    st.markdown("""(Votre guide ici)""")
+    st.markdown("""
+    Cette application note les opportunités sur 5 étoiles :
+    - ⭐ **Volatilité**: ATR(D) > seuil.
+    - ⭐ **Tendance H4**: ADX > seuil ET DMI aligné.
+    - ⭐ **Tendance H1**: ADX > seuil ET DMI aligné.
+    - ⭐ **Confluence**: La tendance H1 est la même que la tendance H4.
+    - ⭐ **Momentum**: RSI H1 dans la zone de confort (ni sur-vendu, ni sur-acheté).
+    """)
+# --- END OF FILE app.py ---

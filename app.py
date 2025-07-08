@@ -1,5 +1,3 @@
-# --- START OF FILE app.py (VERSION OANDA FINALE ET ROBUSTE) ---
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -47,31 +45,30 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
     all_data = {}
     for tf in timeframes:
-        # On demande plus de bougies pour être sûr d'avoir assez de données pour les calculs
-        params = {'granularity': tf, 'count': 150, 'price': 'M'} 
+        params = {'granularity': tf, 'count': 100, 'price': 'M'} # Réduit à 100 pour accélérer
         try:
             r = instruments.InstrumentsCandles(instrument=pair, params=params)
             api.request(r)
-            if 'candles' not in r.response or not r.response['candles']: return None
+            if 'candles' not in r.response or not r.response['candles']:
+                st.write(f"Pas de données pour {pair} sur {tf}")
+                return None
             data = [{'Time': c['time'], 'Close': float(c['mid']['c']), 'High': float(c['mid']['h']), 'Low': float(c['mid']['l'])} for c in r.response['candles']]
             df = pd.DataFrame(data)
             df['Time'] = pd.to_datetime(df['Time']).dt.tz_localize('UTC').dt.tz_convert(TIMEZONE)
             all_data[tf] = df
-        except Exception:
+        except Exception as e:
+            st.write(f"Erreur pour {pair} sur {tf}: {e}")
             return None
     return all_data
 
 def calculate_volatility_indicators(df):
-    if df is None or len(df) < 50: return None # Besoin d'assez de données pour les calculs
-    
+    if df is None or len(df) < 20: # Réduit à 20 pour plus de flexibilité
+        return None
     df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
     adx_indicator = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
     df['adx'] = adx_indicator.adx()
     df['dmi_plus'] = adx_indicator.adx_pos()
     df['dmi_minus'] = adx_indicator.adx_neg()
-    
-    # ### CORRECTION DÉFINITIVE : On supprime les lignes où les indicateurs sont nuls
-    # et on retourne un DataFrame propre.
     return df.dropna()
 
 def get_star_rating(score):
@@ -89,13 +86,13 @@ def run_volatility_analysis(instruments_list, params):
         progress_bar.progress((i + 1) / len(instruments_list), text=progress_text)
         
         multi_tf_data = fetch_multi_timeframe_data(instrument)
-        if multi_tf_data is None: continue
+        if multi_tf_data is None:
+            continue
 
         data_D = calculate_volatility_indicators(multi_tf_data.get('D'))
         data_H4 = calculate_volatility_indicators(multi_tf_data.get('H4'))
         data_H1 = calculate_volatility_indicators(multi_tf_data.get('H1'))
         
-        # ### CORRECTION DÉFINITIVE : On vérifie que les dataframes ne sont pas vides APRES nettoyage
         if data_D is None or data_H4 is None or data_H1 is None or data_D.empty or data_H4.empty or data_H1.empty:
             continue
             
@@ -108,10 +105,7 @@ def run_volatility_analysis(instruments_list, params):
         if last_H4['adx'] > params['min_adx']: score += 1
         if last_H1['adx'] > params['min_adx']: score += 1
         
-        if last_H1['adx'] > params['min_adx']:
-            direction = 'Achat' if last_H1['dmi_plus'] > last_H1['dmi_minus'] else 'Vente'
-        else:
-            direction = 'Range'
+        direction = 'Achat' if last_H1['dmi_plus'] > last_H1['dmi_minus'] else 'Vente' if last_H1['adx'] > params['min_adx'] else 'Range'
 
         all_results.append({
             'Paire': instrument.replace('_', '/'), 'Tendance H1': direction, 'Prix': price,
@@ -129,20 +123,24 @@ st.markdown('<h1 class="screener-header">⚡ Forex & Gold ADX Screener</h1>', un
 
 with st.sidebar:
     st.header("🛠️ Paramètres du Filtre")
-    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 3, 1, 1) # Par défaut à 1 pour voir plus de résultats
+    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 3, 0, 1) # Par défaut à 0 pour voir tous les résultats
     params = {
-        'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.10, 1.50, 0.40, 0.05),
-        'min_adx': st.slider("ADX Minimum", 15, 40, 20, 1),
+        'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.10, 1.50, 0.10, 0.05), # Réduit à 0.10 par défaut
+        'min_adx': st.slider("ADX Minimum", 15, 40, 15, 1), # Réduit à 15 par défaut
     }
 
 if 'scan_done' not in st.session_state: st.session_state.scan_done = False
 if st.sidebar.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
-    st.session_state.scan_done = False; st.cache_data.clear(); st.rerun()
+    st.session_state.scan_done = False
+    st.cache_data.clear()
+    st.rerun()
 
 if not st.session_state.scan_done:
     with st.spinner("Analyse de la volatilité en cours..."):
         st.session_state.results_df = run_volatility_analysis(INSTRUMENTS_LIST, params)
-        st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
+        st.session_state.scan_time = datetime.now()
+        st.session_state.scan_done = True
+        st.rerun()
 
 if st.session_state.scan_done and 'results_df' in st.session_state:
     df = st.session_state.results_df

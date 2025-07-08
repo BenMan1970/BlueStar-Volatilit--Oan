@@ -1,7 +1,8 @@
 streamlit
+oandapyV20
+ta
+matplotlib
 pandas
 numpy
-ta
-oandapyV20
 pytz
-pdfkit
+Pillow

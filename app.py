@@ -158,26 +158,52 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
             st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
 
             filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
-            display_df = filtered_df.copy()
-            cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
-            for col in cols_to_format:
-                display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}")
+            
+            # Définir l'ordre des colonnes pour l'affichage
+            display_cols = ['Note', 'Paire', 'Label', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
+            display_df = filtered_df[display_cols]
+            
+            # --- NOUVELLE PARTIE : AFFICHAGE AVEC ST.DATAFRAME (STYLE PANDAS) ---
+            st.dataframe(
+                display_df,
+                column_config={
+                    "Prix": st.column_config.NumberColumn("Prix", format="%.4f"),
+                    "ATR (D) %": st.column_config.NumberColumn("ATR (D) %", format="%.2f%%"),
+                    "ADX H1": st.column_config.NumberColumn("ADX H1", format="%.2f"),
+                    "ADX H4": st.column_config.NumberColumn("ADX H4", format="%.2f"),
+                },
+                use_container_width=True, # S'adapte à la largeur de la page
+                hide_index=True # Cache l'index de pandas
+            )
 
-            display_cols = ['Note', 'Label', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
+            # --- PARTIE CONSERVÉE : Génération de l'image pour le téléchargement ---
+            # On crée une copie du dataframe pour le formater en texte pour l'image
+            df_for_image = display_df.copy()
+            for col in ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']:
+                df_for_image[col] = df_for_image[col].apply(lambda x: f"{x:.2f}")
 
-            fig, ax = plt.subplots(figsize=(10, len(display_df) * 0.5 + 1))
+            # Création de l'image en mémoire sans l'afficher à l'écran
+            fig, ax = plt.subplots(figsize=(10, len(df_for_image) * 0.5 + 1))
             ax.axis('tight')
             ax.axis('off')
-            table = ax.table(cellText=display_df[display_cols].values,
-                             colLabels=display_df[display_cols].columns,
+            table = ax.table(cellText=df_for_image.values,
+                             colLabels=df_for_image.columns,
                              cellLoc='center', loc='center')
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1.2, 1.2)
 
             buf = BytesIO()
             plt.savefig(buf, format='png', bbox_inches='tight', dpi=200)
             buf.seek(0)
-
-            st.image(buf, caption='Résultats du Scan')
-            st.download_button("📸 Télécharger l'image PNG", buf, file_name='scan_volatilite.png', mime="image/png")
+            
+            # Le bouton de téléchargement utilise l'image générée en mémoire
+            st.download_button(
+                "📸 Télécharger les résultats (PNG)", 
+                buf, 
+                file_name=f'scan_volatilite_{datetime.now().strftime("%Y%m%d_%H%M")}.png', 
+                mime="image/png"
+            )
 
 with st.expander("ℹ️ Comprendre la Notation (3 Étoiles)"):
     st.markdown("""

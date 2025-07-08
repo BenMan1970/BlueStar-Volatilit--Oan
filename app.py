@@ -7,7 +7,9 @@ from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments
 import ta
 import pytz
-from weasyprint import HTML
+from io import BytesIO
+from PIL import Image
+import matplotlib.pyplot as plt
 
 warnings.filterwarnings('ignore')
 
@@ -28,11 +30,12 @@ except KeyError:
     st.stop()
 
 INSTRUMENTS_LIST = [
-    'EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD', 
+    'EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD',
     'EUR_JPY', 'GBP_JPY', 'CHF_JPY', 'AUD_JPY', 'CAD_JPY', 'NZD_JPY',
     'EUR_GBP', 'EUR_AUD', 'EUR_CAD', 'EUR_CHF', 'EUR_NZD',
     'GBP_AUD', 'GBP_CAD', 'GBP_CHF', 'GBP_NZD', 'XAU_USD'
 ]
+
 TIMEZONE = 'Europe/Paris'
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -162,21 +165,19 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
 
             display_cols = ['Note', 'Label', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
 
-            def style_dataframe(df_to_style):
-                def style_tendance(tendance):
-                    if 'Achat' in tendance: color = 'lightgreen'
-                    elif 'Vente' in tendance: color = 'lightcoral'
-                    else: color = 'gray'
-                    return f'color: {color}; font-weight: bold;'
-                return df_to_style.style.applymap(style_tendance, subset=['Tendance H1'])
+            fig, ax = plt.subplots(figsize=(10, len(display_df) * 0.5 + 1))
+            ax.axis('tight')
+            ax.axis('off')
+            table = ax.table(cellText=display_df[display_cols].values,
+                             colLabels=display_df[display_cols].columns,
+                             cellLoc='center', loc='center')
 
-            st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
+            buf = BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', dpi=200)
+            buf.seek(0)
 
-            if st.button("📄 Télécharger PDF"):
-                html_table = display_df.to_html(index=False)
-                HTML(string=html_table).write_pdf("rapport_volatilite.pdf")
-                with open("rapport_volatilite.pdf", "rb") as f:
-                    st.download_button("Télécharger le rapport PDF", f, file_name="rapport_volatilite.pdf")
+            st.image(buf, caption='Résultats du Scan')
+            st.download_button("📸 Télécharger l'image PNG", buf, file_name='scan_volatilite.png', mime="image/png")
 
 with st.expander("ℹ️ Comprendre la Notation (3 Étoiles)"):
     st.markdown("""

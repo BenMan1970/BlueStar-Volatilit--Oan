@@ -22,23 +22,34 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
-# --- Fonctions (inchangées) ---
 try:
     OANDA_ACCESS_TOKEN = st.secrets["OANDA_ACCESS_TOKEN"]
 except KeyError:
     st.error("🔑 Secret OANDA_ACCESS_TOKEN non trouvé !")
     st.stop()
 
-# La liste inclut déjà XAU_USD
+# MODIFICATION : Liste complète de 28 paires + XAU/USD (Total 29)
 INSTRUMENTS_LIST = [
-    'EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD',
-    'EUR_JPY', 'GBP_JPY', 'CHF_JPY', 'AUD_JPY', 'CAD_JPY', 'NZD_JPY',
-    'EUR_GBP', 'EUR_AUD', 'EUR_CAD', 'EUR_CHF', 'EUR_NZD',
-    'GBP_AUD', 'GBP_CAD', 'GBP_CHF', 'GBP_NZD', 'XAU_USD'
+    # Majors (7)
+    'EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD',
+    # EUR Crosses (6)
+    'EUR_GBP', 'EUR_AUD', 'EUR_NZD', 'EUR_CAD', 'EUR_CHF', 'EUR_JPY',
+    # GBP Crosses (5)
+    'GBP_AUD', 'GBP_NZD', 'GBP_CAD', 'GBP_CHF', 'GBP_JPY',
+    # AUD Crosses (4)
+    'AUD_CAD', 'AUD_CHF', 'AUD_JPY', 'AUD_NZD',
+    # NZD Crosses (3)
+    'NZD_CAD', 'NZD_CHF', 'NZD_JPY',
+    # CAD Crosses (2)
+    'CAD_CHF', 'CAD_JPY',
+    # CHF Cross (1)
+    'CHF_JPY',
+    # Gold (1)
+    'XAU_USD'
 ]
 TIMEZONE = 'Europe/Paris'
 
+# --- Fonctions (inchangées) ---
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
@@ -142,22 +153,16 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
         else:
             st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
             
-            # --- MODIFICATION : Préparation du DataFrame compact ---
-            
-            # 1. Création de la colonne ADX combinée
             filtered_df['ADX (H1/H4)'] = filtered_df['ADX H1'].map('{:.2f}'.format) + ' / ' + filtered_df['ADX H4'].map('{:.2f}'.format)
-            
-            # 2. Ajout de la note en étoiles
             filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
             
-            # 3. Sélection et renommage des colonnes pour l'affichage
             display_cols = ['Note', 'Paire', 'Label', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX (H1/H4)']
-            display_df = filtered_df[display_cols].rename(columns={
-                'Tendance H1': 'Dir. H1',
-                'ATR (D) %': 'ATR %'
-            })
+            display_df = filtered_df[display_cols].rename(columns={'Tendance H1': 'Dir. H1', 'ATR (D) %': 'ATR %'})
             
-            # --- MODIFICATION : Affichage du DataFrame compact ---
+            # MODIFICATION : Calcul dynamique de la hauteur pour éviter la barre de défilement interne
+            # Hauteur de l'en-tête (1) + nombre de lignes, multiplié par la hauteur d'une ligne (35px)
+            table_height = (len(display_df) + 1) * 35 
+
             st.dataframe(
                 display_df.style.applymap(style_tendance, subset=['Dir. H1']),
                 column_config={
@@ -165,14 +170,13 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
                     "ATR %": st.column_config.NumberColumn(format="%.2f%%"),
                 },
                 use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                height=table_height  # Application de la hauteur dynamique
             )
 
-            # --- MODIFICATION : Mise à jour du DataFrame pour l'image PNG ---
             df_for_image = display_df.copy()
             df_for_image['Prix'] = df_for_image['Prix'].apply(lambda x: f"{x:.4f}")
             df_for_image['ATR %'] = df_for_image['ATR %'].apply(lambda x: f"{x:.2f}%")
-            
             fig, ax = plt.subplots(figsize=(10, len(df_for_image) * 0.5 + 1))
             ax.axis('tight'); ax.axis('off')
             table = ax.table(cellText=df_for_image.values, colLabels=df_for_image.columns, cellLoc='center', loc='center')

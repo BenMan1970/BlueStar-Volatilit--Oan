@@ -1,6 +1,7 @@
 streamlit
 pandas
 numpy
-oandapyV20
 ta
+oandapyV20
 pytz
+pdfkit

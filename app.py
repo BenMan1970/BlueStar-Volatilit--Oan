@@ -7,6 +7,7 @@ from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments
 import ta
 import pytz
+import pdfkit
 
 warnings.filterwarnings('ignore')
 
@@ -45,14 +46,12 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
             api.request(r)
             candles = r.response.get('candles', [])
             if not candles:
-                st.write(f"⚠️ Pas de données pour {pair} sur {tf}")
                 continue
             data = [{'Time': c['time'], 'Close': float(c['mid']['c']), 'High': float(c['mid']['h']), 'Low': float(c['mid']['l'])} for c in candles]
             df = pd.DataFrame(data)
             df['Time'] = pd.to_datetime(df['Time']).dt.tz_convert(TIMEZONE)
             all_data[tf] = df
-        except Exception as e:
-            st.write(f"❌ Erreur {pair} - {tf}: {e}")
+        except:
             continue
     return all_data if all_data else None
 
@@ -60,16 +59,12 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
 def calculate_volatility_indicators(df):
     if df is None or df.empty or len(df) < 15:
         return None
-    try:
-        df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
-        adx_indicator = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
-        df['adx'] = adx_indicator.adx()
-        df['dmi_plus'] = adx_indicator.adx_pos()
-        df['dmi_minus'] = adx_indicator.adx_neg()
-        return df.dropna()
-    except Exception as e:
-        st.write(f"Erreur calcul indicateurs: {e}")
-        return None
+    df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+    adx_indicator = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
+    df['adx'] = adx_indicator.adx()
+    df['dmi_plus'] = adx_indicator.adx_pos()
+    df['dmi_minus'] = adx_indicator.adx_neg()
+    return df.dropna()
 
 
 def get_star_rating(score):
@@ -81,8 +76,7 @@ def run_volatility_analysis(instruments_list, params):
     progress_bar = st.progress(0, text="Initialisation du scan...")
 
     for i, instrument in enumerate(instruments_list):
-        progress_text = f"Analyse de {instrument.replace('_', '/')}... ({i+1}/{len(instruments_list)})"
-        progress_bar.progress((i + 1) / len(instruments_list), text=progress_text)
+        progress_bar.progress((i + 1) / len(instruments_list), text=f"Analyse {instrument} ({i+1}/{len(instruments_list)})")
 
         multi_tf_data = fetch_multi_timeframe_data(instrument)
         if not multi_tf_data:
@@ -104,14 +98,16 @@ def run_volatility_analysis(instruments_list, params):
         if last_H4['adx'] > params['min_adx']: score += 1
         if last_H1['adx'] > params['min_adx']: score += 1
 
+        dmi_gap = abs(last_H1['dmi_plus'] - last_H1['dmi_minus'])
         direction = 'Achat' if last_H1['dmi_plus'] > last_H1['dmi_minus'] else 'Vente' if last_H1['adx'] > params['min_adx'] else 'Range'
 
-        st.write(f"🔍 {instrument}: Score={score}, ATR%={atr_percent:.2f}, ADX H4={last_H4['adx']:.2f}, ADX H1={last_H1['adx']:.2f}, Direction={direction}")
+        a_plus = atr_percent > 0.8 and last_H4['adx'] > 25 and last_H1['adx'] > 25 and dmi_gap > 5
+        label = '💎 A+ Volatility' if a_plus else ''
 
         all_results.append({
             'Paire': instrument.replace('_', '/'), 'Tendance H1': direction, 'Prix': price,
             'ATR (D) %': atr_percent, 'ADX H1': last_H1['adx'], 'ADX H4': last_H4['adx'],
-            'Score': score
+            'Score': score, 'Label': label
         })
 
     progress_bar.empty()
@@ -149,23 +145,22 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
     st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
 
     if df.empty:
-        st.warning("Aucun instrument ne correspond aux critères. Essayez d'assouplir les paramètres.")
+        st.warning("Aucun instrument ne correspond aux critères.")
     else:
         filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
 
         if filtered_df.empty:
-            st.info(f"Aucune opportunité trouvée avec une note d'au moins {min_score_to_display} étoile(s).")
+            st.info(f"Aucune opportunité trouvée.")
         else:
             st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
 
             filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
             display_df = filtered_df.copy()
             cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
-
             for col in cols_to_format:
                 display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}")
 
-            display_cols = ['Note', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
+            display_cols = ['Note', 'Label', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
 
             def style_dataframe(df_to_style):
                 def style_tendance(tendance):
@@ -177,9 +172,16 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
 
             st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
 
+            if st.button("📄 Télécharger PDF"):
+                html_table = display_df.to_html(index=False)
+                pdfkit.from_string(html_table, 'rapport_volatilite.pdf')
+                with open('rapport_volatilite.pdf', 'rb') as f:
+                    st.download_button('Télécharger le rapport PDF', f, file_name='rapport_volatilite.pdf')
+
 with st.expander("ℹ️ Comprendre la Notation (3 Étoiles)"):
     st.markdown("""
     - ⭐ **Volatilité**: L'ATR journalier dépasse le seuil.
     - ⭐ **Tendance Fond**: ADX H4 dépasse le seuil.
     - ⭐ **Tendance Entrée**: ADX H1 dépasse le seuil.
+    - 💎 **A+ Volatility**: Tous les indicateurs sont très forts + tendance nette.
     """)

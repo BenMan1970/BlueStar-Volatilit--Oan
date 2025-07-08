@@ -1,4 +1,4 @@
-# --- START OF FILE app.py (VERSION FINALE CORRIGÉE) ---
+# --- START OF FILE app.py (VERSION OANDA FINALE ET ROBUSTE) ---
 
 import streamlit as st
 import pandas as pd
@@ -47,7 +47,8 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     api = API(access_token=OANDA_ACCESS_TOKEN, environment="practice")
     all_data = {}
     for tf in timeframes:
-        params = {'granularity': tf, 'count': 100, 'price': 'M'}
+        # On demande plus de bougies pour être sûr d'avoir assez de données pour les calculs
+        params = {'granularity': tf, 'count': 150, 'price': 'M'} 
         try:
             r = instruments.InstrumentsCandles(instrument=pair, params=params)
             api.request(r)
@@ -61,13 +62,17 @@ def fetch_multi_timeframe_data(pair, timeframes=['D', 'H4', 'H1']):
     return all_data
 
 def calculate_volatility_indicators(df):
-    if df is None or len(df) < 30: return None
+    if df is None or len(df) < 50: return None # Besoin d'assez de données pour les calculs
+    
     df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
     adx_indicator = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], window=14)
     df['adx'] = adx_indicator.adx()
     df['dmi_plus'] = adx_indicator.adx_pos()
     df['dmi_minus'] = adx_indicator.adx_neg()
-    return df
+    
+    # ### CORRECTION DÉFINITIVE : On supprime les lignes où les indicateurs sont nuls
+    # et on retourne un DataFrame propre.
+    return df.dropna()
 
 def get_star_rating(score):
     return "⭐" * int(score) + "☆" * (3 - int(score))
@@ -90,12 +95,11 @@ def run_volatility_analysis(instruments_list, params):
         data_H4 = calculate_volatility_indicators(multi_tf_data.get('H4'))
         data_H1 = calculate_volatility_indicators(multi_tf_data.get('H1'))
         
-        if data_D is None or data_H4 is None or data_H1 is None: continue
+        # ### CORRECTION DÉFINITIVE : On vérifie que les dataframes ne sont pas vides APRES nettoyage
+        if data_D is None or data_H4 is None or data_H1 is None or data_D.empty or data_H4.empty or data_H1.empty:
+            continue
             
         last_D, last_H4, last_H1 = data_D.iloc[-1], data_H4.iloc[-1], data_H1.iloc[-1]
-        
-        # ### CORRECTION : On enlève le filtre isna() trop strict. 
-        # Une comparaison avec NaN donnera False, ce qui est suffisant.
         
         score = 0
         price = last_H1['Close']
@@ -125,72 +129,56 @@ st.markdown('<h1 class="screener-header">⚡ Forex & Gold ADX Screener</h1>', un
 
 with st.sidebar:
     st.header("🛠️ Paramètres du Filtre")
-    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 3, 1, 1) # Par défaut à 1
+    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 3, 1, 1) # Par défaut à 1 pour voir plus de résultats
     params = {
         'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.10, 1.50, 0.40, 0.05),
         'min_adx': st.slider("ADX Minimum", 15, 40, 20, 1),
     }
 
-# ### CORRECTION : Logique du bouton Rescan dans la zone principale
-if 'scan_done' not in st.session_state:
-    st.session_state.scan_done = False
+if 'scan_done' not in st.session_state: st.session_state.scan_done = False
+if st.sidebar.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
+    st.session_state.scan_done = False; st.cache_data.clear(); st.rerun()
 
-# Un bouton pour le premier scan
 if not st.session_state.scan_done:
-    if st.button("🔎 Lancer le premier scan", use_container_width=True, type="primary"):
-        with st.spinner("Analyse de la volatilité en cours..."):
-            st.session_state.results_df = run_volatility_analysis(INSTRUMENTS_LIST, params)
-            st.session_state.scan_time = datetime.now()
-            st.session_state.scan_done = True
-            st.rerun()
+    with st.spinner("Analyse de la volatilité en cours..."):
+        st.session_state.results_df = run_volatility_analysis(INSTRUMENTS_LIST, params)
+        st.session_state.scan_time = datetime.now(); st.session_state.scan_done = True; st.rerun()
 
-# Affichage des résultats et du bouton Rescan
-if st.session_state.scan_done:
-    if 'results_df' in st.session_state:
-        df = st.session_state.results_df
-        scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
-
-        # Bouton Rescan visible après le premier scan
-        if st.button("🔄 Rescan", use_container_width=True):
-             with st.spinner("Analyse de la volatilité en cours..."):
-                st.cache_data.clear()
-                st.session_state.results_df = run_volatility_analysis(INSTRUMENTS_LIST, params)
-                st.session_state.scan_time = datetime.now()
-                st.rerun()
-        
-        st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
-        
-        if df.empty:
-            st.warning("Aucun instrument n'a pu être analysé. Cela peut être dû à des données incomplètes de la part du fournisseur.")
+if st.session_state.scan_done and 'results_df' in st.session_state:
+    df = st.session_state.results_df
+    scan_time_str = st.session_state.scan_time.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+    st.markdown(f'<div class="update-info">🔄 Scan terminé à {scan_time_str} ({TIMEZONE})</div>', unsafe_allow_html=True)
+    
+    if df.empty:
+        st.warning("Aucun instrument ne correspond aux critères avec les données actuelles. Essayez d'assouplir les paramètres.")
+    else:
+        filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
+        if filtered_df.empty:
+            st.info(f"Aucune opportunité trouvée avec une note d'au moins {min_score_to_display} étoile(s).")
         else:
-            filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
-            if filtered_df.empty:
-                st.info(f"Aucun instrument ne correspond aux critères avec une note d'au moins {min_score_to_display} étoile(s). Essayez d'assouplir les paramètres.")
-            else:
-                st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
-                
-                filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
-                display_df = filtered_df.copy()
-                cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
-                for col in cols_to_format:
-                    display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-                
-                display_cols = ['Note', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
-                
-                def style_dataframe(df_to_style):
-                    def style_tendance(tendance):
-                        if 'Achat' in tendance: color = 'lightgreen'
-                        elif 'Vente' in tendance: color = 'lightcoral'
-                        else: color = 'gray'
-                        return f'color: {color}; font-weight: bold;'
-                    return df_to_style.style.applymap(style_tendance, subset=['Tendance H1'])
-                
-                st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
+            st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
+            
+            filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
+            display_df = filtered_df.copy()
+            cols_to_format = ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
+            for col in cols_to_format:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}")
+            
+            display_cols = ['Note', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
+            
+            def style_dataframe(df_to_style):
+                def style_tendance(tendance):
+                    if 'Achat' in tendance: color = 'lightgreen'
+                    elif 'Vente' in tendance: color = 'lightcoral'
+                    else: color = 'gray'
+                    return f'color: {color}; font-weight: bold;'
+                return df_to_style.style.applymap(style_tendance, subset=['Tendance H1'])
+            
+            st.dataframe(style_dataframe(display_df.set_index('Paire')[display_cols]), use_container_width=True)
 
-    with st.expander("ℹ️ Comprendre la Notation (3 Étoiles)"):
-        st.markdown("""
-        - ⭐ **Volatilité**: L'ATR journalier est supérieur au seuil.
-        - ⭐ **Tendance de Fond**: L'ADX sur H4 est supérieur au seuil.
-        - ⭐ **Tendance d'Entrée**: L'ADX sur H1 est supérieur au seuil.
-        La **Tendance H1** n'affiche "Achat" ou "Vente" que si l'ADX H1 est fort.
-        """)
+with st.expander("ℹ️ Comprendre la Notation (3 Étoiles)"):
+    st.markdown("""
+    - ⭐ **Volatilité**: L'ATR journalier est supérieur au seuil.
+    - ⭐ **Tendance de Fond**: L'ADX sur H4 est supérieur à 20.
+    - ⭐ **Tendance d'Entrée**: L'ADX sur H1 est supérieur à 20.
+    """)

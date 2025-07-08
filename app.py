@@ -7,7 +7,7 @@ from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments
 import ta
 import pytz
-import pdfkit
+from weasyprint import HTML
 
 warnings.filterwarnings('ignore')
 
@@ -124,13 +124,13 @@ with st.sidebar:
         'min_adx': st.slider("ADX Minimum", 10, 40, 10, 1),
     }
 
+    if st.button("🔄 Rescan"):
+        st.session_state.scan_done = False
+        st.cache_data.clear()
+        st.rerun()
+
 if 'scan_done' not in st.session_state:
     st.session_state.scan_done = False
-
-if st.sidebar.button("🔎 Lancer / Rescan", use_container_width=True, type="primary"):
-    st.session_state.scan_done = False
-    st.cache_data.clear()
-    st.rerun()
 
 if not st.session_state.scan_done:
     with st.spinner("Analyse de la volatilité en cours..."):
@@ -174,9 +174,9 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
 
             if st.button("📄 Télécharger PDF"):
                 html_table = display_df.to_html(index=False)
-                pdfkit.from_string(html_table, 'rapport_volatilite.pdf')
-                with open('rapport_volatilite.pdf', 'rb') as f:
-                    st.download_button('Télécharger le rapport PDF', f, file_name='rapport_volatilite.pdf')
+                HTML(string=html_table).write_pdf("rapport_volatilite.pdf")
+                with open("rapport_volatilite.pdf", "rb") as f:
+                    st.download_button("Télécharger le rapport PDF", f, file_name="rapport_volatilite.pdf")
 
 with st.expander("ℹ️ Comprendre la Notation (3 Étoiles)"):
     st.markdown("""

@@ -102,7 +102,10 @@ def run_volatility_analysis(instruments_list, params):
         if last_H1['adx'] > params['min_adx']: score += 1
 
         dmi_gap = abs(last_H1['dmi_plus'] - last_H1['dmi_minus'])
-        direction = 'Achat' if last_H1['dmi_plus'] > last_H1['dmi_minus'] else 'Vente' if last_H1['adx'] > params['min_adx'] else 'Range'
+        # Direction "Range" si l'ADX est inférieur au seuil de tendance
+        direction = 'Achat' if last_H1['dmi_plus'] > last_H1['dmi_minus'] else 'Vente'
+        if last_H1['adx'] < params['min_adx']:
+            direction = 'Range'
 
         a_plus = atr_percent > 0.8 and last_H4['adx'] > 25 and last_H1['adx'] > 25 and dmi_gap > 5
         label = '💎 A+ Volatility' if a_plus else ''
@@ -121,10 +124,12 @@ st.markdown('<h1 class="screener-header">⚡ Forex & Gold ADX Screener</h1>', un
 
 with st.sidebar:
     st.header("🛠️ Paramètres du Filtre")
-    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 3, 0, 1)
+    # CORRECTION : Valeur par défaut de la note minimale passée à 1
+    min_score_to_display = st.slider("Note minimale (étoiles)", 0, 3, 1, 1)
     params = {
         'min_atr_percent': st.slider("ATR (Daily) Minimum %", 0.05, 1.50, 0.05, 0.05),
-        'min_adx': st.slider("ADX Minimum", 10, 40, 10, 1),
+        # CORRECTION : Valeur par défaut de l'ADX minimum passée à 20
+        'min_adx': st.slider("ADX Minimum", 10, 40, 20, 1),
     }
 
     if st.button("🔄 Rescan"):
@@ -153,17 +158,15 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
         filtered_df = df[df['Score'] >= min_score_to_display].sort_values(by='Score', ascending=False)
 
         if filtered_df.empty:
-            st.info(f"Aucune opportunité trouvée.")
+            st.info(f"Aucune opportunité trouvée avec les filtres actuels.")
         else:
             st.subheader(f"🏆 {len(filtered_df)} Opportunités trouvées")
 
             filtered_df['Note'] = filtered_df['Score'].apply(get_star_rating)
             
-            # Définir l'ordre des colonnes pour l'affichage
             display_cols = ['Note', 'Paire', 'Label', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']
             display_df = filtered_df[display_cols]
             
-            # --- NOUVELLE PARTIE : AFFICHAGE AVEC ST.DATAFRAME (STYLE PANDAS) ---
             st.dataframe(
                 display_df,
                 column_config={
@@ -172,17 +175,14 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
                     "ADX H1": st.column_config.NumberColumn("ADX H1", format="%.2f"),
                     "ADX H4": st.column_config.NumberColumn("ADX H4", format="%.2f"),
                 },
-                use_container_width=True, # S'adapte à la largeur de la page
-                hide_index=True # Cache l'index de pandas
+                use_container_width=True,
+                hide_index=True
             )
 
-            # --- PARTIE CONSERVÉE : Génération de l'image pour le téléchargement ---
-            # On crée une copie du dataframe pour le formater en texte pour l'image
             df_for_image = display_df.copy()
             for col in ['Prix', 'ATR (D) %', 'ADX H1', 'ADX H4']:
                 df_for_image[col] = df_for_image[col].apply(lambda x: f"{x:.2f}")
 
-            # Création de l'image en mémoire sans l'afficher à l'écran
             fig, ax = plt.subplots(figsize=(10, len(df_for_image) * 0.5 + 1))
             ax.axis('tight')
             ax.axis('off')
@@ -197,7 +197,6 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
             plt.savefig(buf, format='png', bbox_inches='tight', dpi=200)
             buf.seek(0)
             
-            # Le bouton de téléchargement utilise l'image générée en mémoire
             st.download_button(
                 "📸 Télécharger les résultats (PNG)", 
                 buf, 

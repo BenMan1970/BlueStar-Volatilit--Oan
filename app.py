@@ -28,23 +28,14 @@ except KeyError:
     st.error("🔑 Secret OANDA_ACCESS_TOKEN non trouvé !")
     st.stop()
 
-# MODIFICATION : Liste complète de 28 paires + XAU/USD (Total 29)
 INSTRUMENTS_LIST = [
-    # Majors (7)
     'EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD',
-    # EUR Crosses (6)
     'EUR_GBP', 'EUR_AUD', 'EUR_NZD', 'EUR_CAD', 'EUR_CHF', 'EUR_JPY',
-    # GBP Crosses (5)
     'GBP_AUD', 'GBP_NZD', 'GBP_CAD', 'GBP_CHF', 'GBP_JPY',
-    # AUD Crosses (4)
     'AUD_CAD', 'AUD_CHF', 'AUD_JPY', 'AUD_NZD',
-    # NZD Crosses (3)
     'NZD_CAD', 'NZD_CHF', 'NZD_JPY',
-    # CAD Crosses (2)
     'CAD_CHF', 'CAD_JPY',
-    # CHF Cross (1)
     'CHF_JPY',
-    # Gold (1)
     'XAU_USD'
 ]
 TIMEZONE = 'Europe/Paris'
@@ -146,7 +137,12 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
         filtered_df = df[df['Score'] >= min_score_to_display]
         if tendance_filter != 'Toutes':
             filtered_df = filtered_df[filtered_df['Tendance H1'] == tendance_filter]
-        filtered_df = filtered_df.sort_values(by='Score', ascending=False)
+        
+        # MODIFICATION : Application du tri multi-niveaux
+        filtered_df = filtered_df.sort_values(
+            by=['Score', 'Tendance H1'], 
+            ascending=[False, True]  # Trie par Score (décroissant) PUIS par Tendance (alphabétique)
+        )
 
         if filtered_df.empty:
             st.info(f"Aucune opportunité trouvée avec les filtres actuels.")
@@ -159,19 +155,12 @@ if st.session_state.scan_done and 'results_df' in st.session_state:
             display_cols = ['Note', 'Paire', 'Label', 'Tendance H1', 'Prix', 'ATR (D) %', 'ADX (H1/H4)']
             display_df = filtered_df[display_cols].rename(columns={'Tendance H1': 'Dir. H1', 'ATR (D) %': 'ATR %'})
             
-            # MODIFICATION : Calcul dynamique de la hauteur pour éviter la barre de défilement interne
-            # Hauteur de l'en-tête (1) + nombre de lignes, multiplié par la hauteur d'une ligne (35px)
             table_height = (len(display_df) + 1) * 35 
 
             st.dataframe(
                 display_df.style.applymap(style_tendance, subset=['Dir. H1']),
-                column_config={
-                    "Prix": st.column_config.NumberColumn(format="%.4f"),
-                    "ATR %": st.column_config.NumberColumn(format="%.2f%%"),
-                },
-                use_container_width=True,
-                hide_index=True,
-                height=table_height  # Application de la hauteur dynamique
+                column_config={"Prix": st.column_config.NumberColumn(format="%.4f"), "ATR %": st.column_config.NumberColumn(format="%.2f%%")},
+                use_container_width=True, hide_index=True, height=table_height
             )
 
             df_for_image = display_df.copy()
